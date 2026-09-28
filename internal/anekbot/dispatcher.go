@@ -103,6 +103,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, sender Sender, update *models
 			logging.Debugf("dispatcher: firing %s callback handler", d.anek.Name())
 			d.anek.HandleCallback(ctx, sender, update)
 		}
+		if d.stats != nil {
+			logging.Debugf("dispatcher: firing %s callback handler", d.stats.Name())
+			d.stats.HandleCallback(ctx, sender, update)
+		}
 	}
 }
 

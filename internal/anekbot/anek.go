@@ -2,6 +2,7 @@ package anekbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -35,6 +36,12 @@ const (
 	inlineSuggestionCount = 3
 	inlineTitleMaxRunes   = 60
 
+	// Telegram rejects answers to inline queries older than ~10s with "query is too old".
+	defaultInlineFetchDeadline = 7 * time.Second
+	defaultJokeAttemptTimeout  = 3 * time.Second
+	inlineFetchRetryDelay      = 200 * time.Millisecond
+	inlineFetchMaxAttempts     = 3
+
 	inlineAITitlePrefix  = "Сгенерировать ИИ-анек на тему "
 	inlineAITextMaxRunes = 100
 	inlineAICacheSeconds = 120
@@ -44,9 +51,13 @@ const (
 	aiJokePendingButtonText   = "⏳"
 	aiJokePendingCallbackData = "ai-joke-pending"
 	classicResultPromoSuffix  = ":promo"
+
+	sayCommandPrefix = "/say"
+	sayResultID      = "admin-say"
 )
 
-const aiJokePromptTemplate = "Придумай короткий анекдот на русском языке на тему: %s. " +
+// Must contain exactly one %s, which is replaced with the requested topic.
+const DefaultAIJokePromptTemplate = "Придумай короткий анекдот на русском языке на тему: %s. " +
 	"Ответь только текстом анекдота, без вступлений, пояснений и кавычек."
 
 const aiJokeGeneratingMessage = "Генерирую ИИ-анек, подождите немного…"
@@ -58,7 +69,13 @@ type AnekHandler struct {
 	promos         *Promotions
 	llm            *llm.LLM
 	stats          *stats.Stats
+	admins         *Admins
 	commandPattern *regexp.Regexp
+
+	inlineFetchDeadline time.Duration
+	jokeAttemptTimeout  time.Duration
+
+	aiJokePromptTemplate string
 
 	inlineDisabled  bool
 	aiJokesDisabled bool
@@ -70,6 +87,11 @@ func NewAnekHandler() *AnekHandler {
 		baseURL:        defaultBaseURL,
 		randFloat:      rand.Float64,
 		commandPattern: anekCommandPattern(""),
+
+		inlineFetchDeadline: defaultInlineFetchDeadline,
+		jokeAttemptTimeout:  defaultJokeAttemptTimeout,
+
+		aiJokePromptTemplate: DefaultAIJokePromptTemplate,
 	}
 }
 
@@ -99,9 +121,20 @@ func (h *AnekHandler) SetStats(s *stats.Stats) {
 	h.stats = s
 }
 
+func (h *AnekHandler) SetAdmins(a *Admins) {
+	h.admins = a
+}
+
 func (h *AnekHandler) SetInline(enabled, aiJokes bool) {
 	h.inlineDisabled = !enabled
 	h.aiJokesDisabled = !aiJokes
+}
+
+// SetAIJokePromptTemplate overrides DefaultAIJokePromptTemplate; a no-op if tmpl is empty.
+func (h *AnekHandler) SetAIJokePromptTemplate(tmpl string) {
+	if tmpl != "" {
+		h.aiJokePromptTemplate = tmpl
+	}
 }
 
 func (h *AnekHandler) Name() string {
@@ -142,11 +175,19 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 	}
 	query := update.InlineQuery
 
+	if text, ok := parseSayText(query.Query); ok && h.admins.IsAdmin(username(query.From)) {
+		h.answerSayInline(ctx, sender, query, text)
+		return
+	}
+
 	topic := strings.Join(strings.Fields(query.Query), " ")
 	if topic != "" && !h.aiJokesDisabled {
 		h.answerAIJokePlaceholderInline(ctx, sender, query, topic)
 		return
 	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, h.inlineFetchDeadline)
+	defer cancel()
 
 	jokes := make([]string, inlineSuggestionCount)
 	var wg sync.WaitGroup
@@ -154,12 +195,7 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 	for i := range jokes {
 		go func(i int) {
 			defer wg.Done()
-			joke, err := h.fetchJoke(ctx)
-			if err != nil {
-				logging.Warnf("anek handler: fetch joke for inline query: %v", err)
-				return
-			}
-			jokes[i] = joke
+			jokes[i] = h.fetchJokeWithRetry(fetchCtx)
 		}(i)
 	}
 	wg.Wait()
@@ -173,15 +209,19 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 		// the user picks unless inline feedback is enabled
 		markup := h.promos.Keyboard()
 		resultID := strconv.Itoa(i)
-		if markup != nil {
-			resultID += classicResultPromoSuffix
-		}
-		results = append(results, &models.InlineQueryResultArticle{
+		article := &models.InlineQueryResultArticle{
 			ID:                  resultID,
 			Title:               inlineTitle(joke),
 			InputMessageContent: models.InputTextMessageContent{MessageText: joke},
-			ReplyMarkup:         markup,
-		})
+		}
+		if markup != nil {
+			// A nil *InlineKeyboardMarkup assigned directly to the ReplyMarkup interface field
+			// survives as a non-nil interface holding a nil pointer, which Telegram rejects as
+			// reply_markup:null instead of an omitted field.
+			article.ID += classicResultPromoSuffix
+			article.ReplyMarkup = markup
+		}
+		results = append(results, article)
 	}
 
 	logging.Debugf("anek handler: answering inline query with %d results", len(results))
@@ -189,6 +229,35 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 		InlineQueryID: query.ID,
 		Results:       results,
 		CacheTime:     1, // 0 is indistinguishable from unset and gets dropped
+	}); err != nil {
+		logging.Warnf("anek handler: answer inline query: %v", err)
+	}
+}
+
+// parseSayText extracts the text after an admin-only "/say <text>" inline query.
+func parseSayText(query string) (string, bool) {
+	trimmed := strings.TrimSpace(query)
+	if !strings.HasPrefix(strings.ToLower(trimmed), sayCommandPrefix) {
+		return "", false
+	}
+	text := strings.TrimSpace(trimmed[len(sayCommandPrefix):])
+	return text, text != ""
+}
+
+// answerSayInline lets an admin post arbitrary text verbatim via inline mode, bypassing
+// both the random-joke fetch and any LLM call.
+func (h *AnekHandler) answerSayInline(ctx context.Context, sender Sender, query *models.InlineQuery, text string) {
+	result := &models.InlineQueryResultArticle{
+		ID:                  sayResultID,
+		Title:               inlineTitle(text),
+		InputMessageContent: models.InputTextMessageContent{MessageText: text},
+	}
+
+	logging.Debugf("anek handler: answering inline query with admin /say text for user=%s", username(query.From))
+	if _, err := sender.AnswerInlineQuery(ctx, &bot.AnswerInlineQueryParams{
+		InlineQueryID: query.ID,
+		Results:       []models.InlineQueryResult{result},
+		IsPersonal:    true, // never let Telegram serve this to a non-admin from a shared cache
 	}); err != nil {
 		logging.Warnf("anek handler: answer inline query: %v", err)
 	}
@@ -228,6 +297,9 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 	chosen := update.ChosenInlineResult
 
+	if chosen.ResultID == sayResultID {
+		return
+	}
 	if chosen.ResultID != aiJokeResultID {
 		// A classic (non-AI) inline joke was actually sent
 		if strings.HasSuffix(chosen.ResultID, classicResultPromoSuffix) {
@@ -250,7 +322,7 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 
 	logging.Debugf("anek handler: generating AI joke for topic %q", topic)
-	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(aiJokePromptTemplate, topic))
+	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
 	if err != nil {
 		logging.Warnf("anek handler: generate AI joke: %v", err)
 		h.editInlineMessage(ctx, sender, chosen.InlineMessageID, llmErrorMessage(err), false, false)
@@ -313,6 +385,29 @@ func inlineTitle(joke string) string {
 	return string(runes[:inlineTitleMaxRunes]) + "…"
 }
 
+// fetchJokeWithRetry returns "" if every attempt failed or ctx expired.
+func (h *AnekHandler) fetchJokeWithRetry(ctx context.Context) string {
+	for attempt := 1; attempt <= inlineFetchMaxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, h.jokeAttemptTimeout)
+		joke, err := h.fetchJoke(attemptCtx)
+		cancel()
+		if err == nil {
+			return joke
+		}
+		logging.Warnf("anek handler: fetch joke for inline query (attempt %d/%d): %v", attempt, inlineFetchMaxAttempts, err)
+
+		if attempt == inlineFetchMaxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(inlineFetchRetryDelay):
+		}
+	}
+	return ""
+}
+
 func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	anekType := anekTypeNormal
 	if h.randFloat() > 0.85 {
@@ -331,6 +426,10 @@ func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %s", resp.Status)
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, anekMaxResponseBytes))
 	if err != nil {
 		return "", err
@@ -345,5 +444,8 @@ func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	// The response isn't valid JSON
 	joke := strings.TrimPrefix(string(utf8Body), `{"content":"`)
 	joke = strings.TrimSuffix(joke, `"}`)
+	if strings.TrimSpace(joke) == "" {
+		return "", errors.New("empty joke")
+	}
 	return truncateToRunes(joke, telegramMessageMaxRunes), nil
 }

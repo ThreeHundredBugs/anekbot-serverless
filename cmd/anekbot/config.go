@@ -22,16 +22,23 @@ type config struct {
 	webhookPath   string
 	webhookSecret string
 
-	metricsEnabled bool
-	metricsPath    string
-	metricsToken   string
+	prometheusEnabled bool
+	prometheusPath    string
+	prometheusToken   string
 
 	// adminUsernames are Telegram @handles (no "@")
 	adminUsernames []string
 
+	// persistenceFile is where stats are saved on shutdown and loaded from on startup;
+	// empty disables persistence.
+	persistenceFile string
+
 	// llmProviders is tried in order; empty means no LLM.
-	llmProviders []llm.Provider
-	llmLimits    llm.Limits
+	llmProviders    []llm.Provider
+	llmLimits       llm.Limits
+	llmSystemPrompt string
+
+	aiJokePromptTemplate string
 
 	anekEnabled       bool
 	inlineEnabled     bool
@@ -53,11 +60,16 @@ type fileConfig struct {
 		WebhookPath   string `json:"webhook_path"`
 		WebhookSecret string `json:"webhook_secret"`
 	} `json:"server"`
-	Metrics struct {
-		Enabled *bool  `json:"enabled"`
-		Path    string `json:"path"`
-		Token   string `json:"token"`
-	} `json:"metrics"`
+	Stats struct {
+		// PersistenceFile is where stats are saved on shutdown and loaded from on startup;
+		// empty disables persistence.
+		PersistenceFile string `json:"persistence_file"`
+		Prometheus      struct {
+			Enabled *bool  `json:"enabled"`
+			Path    string `json:"path"`
+			Token   string `json:"token"`
+		} `json:"prometheus"`
+	} `json:"stats"`
 	Admin struct {
 		// Usernames are Telegram @handles trusted with the /stats command.
 		Usernames []string `json:"usernames"`
@@ -65,6 +77,8 @@ type fileConfig struct {
 	LLM struct {
 		Providers []providerConfig `json:"providers"`
 		RateLimit rateLimitConfig  `json:"rate_limit"`
+		// SystemPrompt is sent to the LLM for both question-answering and AI joke generation.
+		SystemPrompt string `json:"system_prompt"`
 	} `json:"llm"`
 	Anek struct {
 		Enabled *bool `json:"enabled"`
@@ -72,6 +86,8 @@ type fileConfig struct {
 			Enabled    *bool                     `json:"enabled"`
 			AIJokes    *bool                     `json:"ai_jokes"`
 			Promotions *anekbot.PromotionsConfig `json:"promotions"`
+			// AIJokePromptTemplate must contain exactly one %s, replaced with the requested topic.
+			AIJokePromptTemplate string `json:"ai_joke_prompt_template"`
 		} `json:"inline"`
 	} `json:"anek"`
 	Questions struct {
@@ -183,12 +199,13 @@ func loadConfig(args []string) (*config, error) {
 		webhookPath:   or(fc.Server.WebhookPath, "/webhook"),
 		webhookSecret: fileEnvDefault(fc.Server.WebhookSecret, "WEBHOOK_SECRET_TOKEN", ""),
 
-		// Metrics default to disabled, unlike the other *.enabled flags: exposing an HTTP
-		// endpoint is a deliberate opt-in, not a safe default.
-		metricsEnabled: fc.Metrics.Enabled != nil && *fc.Metrics.Enabled,
-		metricsPath:    or(fc.Metrics.Path, "/metrics"),
-		metricsToken:   fileEnvDefault(fc.Metrics.Token, "METRICS_TOKEN", ""),
-		adminUsernames: fc.Admin.Usernames,
+		// The Prometheus endpoint defaults to disabled, unlike the other *.enabled flags:
+		// exposing an HTTP endpoint is a deliberate opt-in, not a safe default.
+		prometheusEnabled: fc.Stats.Prometheus.Enabled != nil && *fc.Stats.Prometheus.Enabled,
+		prometheusPath:    or(fc.Stats.Prometheus.Path, "/metrics"),
+		prometheusToken:   fileEnvDefault(fc.Stats.Prometheus.Token, "METRICS_TOKEN", ""),
+		adminUsernames:    fc.Admin.Usernames,
+		persistenceFile:   fileEnvDefault(fc.Stats.PersistenceFile, "ANEKBOT_STATS_PERSISTENCE_FILE", ""),
 
 		anekEnabled:       enabled(fc.Anek.Enabled),
 		inlineEnabled:     enabled(fc.Anek.Inline.Enabled),
@@ -197,6 +214,9 @@ func loadConfig(args []string) (*config, error) {
 		swearingEnabled:   enabled(fc.Swearing.Enabled),
 		swearingWordsFile: fc.Swearing.WordsFile,
 		llmLimits:         fc.LLM.RateLimit.toLimits(),
+		llmSystemPrompt:   or(fc.LLM.SystemPrompt, anekbot.DefaultSystemPrompt),
+
+		aiJokePromptTemplate: or(fc.Anek.Inline.AIJokePromptTemplate, anekbot.DefaultAIJokePromptTemplate),
 	}
 
 	for _, pc := range fc.LLM.Providers {
@@ -224,19 +244,49 @@ func loadConfig(args []string) (*config, error) {
 	if cfg.mode == "webhook" && cfg.webhookSecret == "" {
 		return nil, errors.New("webhook mode requires a secret: set WEBHOOK_SECRET_TOKEN or server.webhook_secret in the config file")
 	}
-	if cfg.mode == "webhook" && cfg.metricsEnabled {
-		if cfg.metricsToken == "" {
-			return nil, errors.New("metrics endpoint requires a token: set METRICS_TOKEN or metrics.token in the config file")
+	if cfg.mode == "webhook" && cfg.prometheusEnabled {
+		if cfg.prometheusToken == "" {
+			return nil, errors.New("prometheus endpoint requires a token: set METRICS_TOKEN or stats.prometheus.token in the config file")
 		}
-		if cfg.metricsPath == cfg.webhookPath || cfg.metricsPath == healthzPath {
-			return nil, fmt.Errorf("metrics.path %q collides with an existing server route", cfg.metricsPath)
+		if cfg.prometheusPath == cfg.webhookPath || cfg.prometheusPath == healthzPath {
+			return nil, fmt.Errorf("stats.prometheus.path %q collides with an existing server route", cfg.prometheusPath)
 		}
 	}
 	if _, err := logging.ParseLevel(cfg.logLevel); err != nil {
 		return nil, err
 	}
+	if err := validateAIJokePromptTemplate(cfg.aiJokePromptTemplate); err != nil {
+		return nil, fmt.Errorf("anek.inline.ai_joke_prompt_template: %w", err)
+	}
 
 	return cfg, nil
+}
+
+// validateAIJokePromptTemplate rejects a template that fmt.Sprintf wouldn't fill with exactly
+// the joke topic: anything other than one %s verb (%% counts as a literal, not a verb).
+func validateAIJokePromptTemplate(tmpl string) error {
+	verbs := 0
+	for i := 0; i < len(tmpl); i++ {
+		if tmpl[i] != '%' {
+			continue
+		}
+		if i+1 >= len(tmpl) {
+			return fmt.Errorf("trailing %% in %q", tmpl)
+		}
+		switch tmpl[i+1] {
+		case '%':
+			i++
+		case 's':
+			verbs++
+			i++
+		default:
+			return fmt.Errorf("unsupported verb %%%c in %q: only %%s and %%%% are allowed", tmpl[i+1], tmpl)
+		}
+	}
+	if verbs != 1 {
+		return fmt.Errorf("must contain exactly one %%s verb, found %d: %q", verbs, tmpl)
+	}
+	return nil
 }
 
 func or(v, def string) string {

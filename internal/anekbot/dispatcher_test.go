@@ -7,6 +7,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/ThreeHundredBugs/anekbot/internal/llm"
+	"github.com/ThreeHundredBugs/anekbot/internal/stats"
 )
 
 func newTestDispatcher(t *testing.T) *Dispatcher {
@@ -44,7 +45,7 @@ func TestDispatch_Message_RunsLLMHandlerWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
 	}
-	questions := NewQuestionsHandler("anekbot", NewLLM(llm.Limits{}, &fakeLLMProvider{answer: "42"}))
+	questions := NewQuestionsHandler("anekbot", NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "42"}))
 	d := NewDispatcher(anek, swearing, questions, nil)
 
 	sender := &fakeSender{}
@@ -67,7 +68,7 @@ func TestDispatch_Message_RunsLLMAndSwearingHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
 	}
-	questions := NewQuestionsHandler("anekbot", NewLLM(llm.Limits{}, &fakeLLMProvider{answer: "42"}))
+	questions := NewQuestionsHandler("anekbot", NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "42"}))
 	d := NewDispatcher(anek, swearing, questions, nil)
 
 	sender := &fakeSender{}
@@ -144,7 +145,7 @@ func TestDispatch_InlineQuery_SkipsDisabledAnek(t *testing.T) {
 func TestDispatch_InlineQuery_WithQuery_ShowsPlaceholderWithoutCallingLLM(t *testing.T) {
 	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
 	primary := &fakeLLMProvider{answer: "42"}
-	anek.SetLLM(NewLLM(llm.Limits{}, primary))
+	anek.SetLLM(NewLLM("", llm.Limits{}, primary))
 	d := NewDispatcher(anek, nil, nil, nil)
 
 	sender := &fakeSender{}
@@ -167,7 +168,7 @@ func TestDispatch_InlineQuery_WithQuery_ShowsPlaceholderWithoutCallingLLM(t *tes
 
 func TestDispatch_ChosenInlineResult_RunsAnekHandlerWithLLM(t *testing.T) {
 	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
-	anek.SetLLM(NewLLM(llm.Limits{}, &fakeLLMProvider{answer: "42"}))
+	anek.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "42"}))
 	d := NewDispatcher(anek, nil, nil, nil)
 
 	sender := &fakeSender{}
@@ -210,6 +211,30 @@ func TestDispatch_CallbackQuery_RunsAnekHandler(t *testing.T) {
 
 	if len(sender.callbackAnswers) != 1 || sender.callbackAnswers[0].CallbackQueryID != "cb-1" {
 		t.Fatalf("expected the anek handler to answer the callback query, got %+v", sender.callbackAnswers)
+	}
+}
+
+func TestDispatch_CallbackQuery_RunsStatsHandler(t *testing.T) {
+	d := NewDispatcher(nil, nil, nil, nil)
+	d.SetStatsHandler(NewStatsHandler(stats.New(), []string{"admin"}))
+
+	sender := &fakeSender{}
+	update := &models.Update{CallbackQuery: &models.CallbackQuery{
+		ID:   "cb-1",
+		Data: statsRefreshCallbackData,
+		From: models.User{ID: 42, Username: "admin"},
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{ID: 100, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}},
+		},
+	}}
+
+	d.Dispatch(context.Background(), sender, update)
+
+	if len(sender.callbackAnswers) != 1 || sender.callbackAnswers[0].CallbackQueryID != "cb-1" {
+		t.Fatalf("expected the stats handler to answer the callback query, got %+v", sender.callbackAnswers)
+	}
+	if len(sender.editedMessages) != 1 {
+		t.Errorf("expected the stats handler to refresh the message, got %d edits", len(sender.editedMessages))
 	}
 }
 

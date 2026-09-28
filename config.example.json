@@ -10,10 +10,13 @@
     "webhook_secret": ""
   },
 
-  "metrics": {
-    "enabled": true,
-    "path": "/metrics",
-    "token": "replace-me"
+  "stats": {
+    "persistence_file": "",
+    "prometheus": {
+      "enabled": true,
+      "path": "/metrics",
+      "token": "replace-me"
+    }
   },
 
   "admin": {
@@ -31,7 +34,8 @@
       "per_user_window_seconds": 15,
       "max_users": 100000,
       "prune_interval_seconds": 1800
-    }
+    },
+    "system_prompt": ""
   },
 
   "anek": {
@@ -39,6 +43,7 @@
     "inline": {
       "enabled": true,
       "ai_jokes": true,
+      "ai_joke_prompt_template": "",
       "promotions": {
         "frequency": 0.2,
         "items": [

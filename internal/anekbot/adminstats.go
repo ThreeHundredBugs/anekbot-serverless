@@ -13,24 +13,21 @@ import (
 )
 
 const (
-	statsCommand  = "/stats"
-	statsTopUsers = 10
+	statsCommand      = "/stats"
+	statsStartCommand = "/start"
+	statsTopUsers     = 10
+
+	statsRefreshButtonText   = "🔄 Обновить"
+	statsRefreshCallbackData = "anekbot_stats_refresh"
 )
 
 type StatsHandler struct {
 	stats  *stats.Stats
-	admins map[string]struct{}
+	admins *Admins
 }
 
 func NewStatsHandler(s *stats.Stats, adminUsernames []string) *StatsHandler {
-	admins := make(map[string]struct{}, len(adminUsernames))
-	for _, u := range adminUsernames {
-		u = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u), "@"))
-		if u != "" {
-			admins[u] = struct{}{}
-		}
-	}
-	return &StatsHandler{stats: s, admins: admins}
+	return &StatsHandler{stats: s, admins: NewAdmins(adminUsernames)}
 }
 
 func (h *StatsHandler) Name() string {
@@ -38,7 +35,11 @@ func (h *StatsHandler) Name() string {
 }
 
 func (h *StatsHandler) Handle(ctx context.Context, sender Sender, update *models.Update) {
-	if update.Message == nil || strings.TrimSpace(update.Message.Text) != statsCommand {
+	if update.Message == nil {
+		return
+	}
+	text := strings.TrimSpace(update.Message.Text)
+	if text != statsCommand && text != statsStartCommand {
 		return
 	}
 	msg := update.Message
@@ -48,27 +49,61 @@ func (h *StatsHandler) Handle(ctx context.Context, sender Sender, update *models
 	if msg.Chat.Type != models.ChatTypePrivate || msg.From == nil || msg.Chat.ID != msg.From.ID {
 		return
 	}
-	if !h.isAdmin(msg.From.Username) {
+	if !h.admins.IsAdmin(msg.From.Username) {
 		return
 	}
 
-	snap := h.stats.Snapshot(statsTopUsers)
-	logging.Debugf("stats handler: replying to /stats for admin @%s", msg.From.Username)
+	logging.Debugf("stats handler: replying to %s for admin @%s", text, msg.From.Username)
 
 	if _, err := sender.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: msg.Chat.ID,
-		Text:   formatStats(snap),
+		ChatID:      msg.Chat.ID,
+		Text:        formatStats(h.stats.Snapshot(statsTopUsers)),
+		ReplyMarkup: statsKeyboard(),
 	}); err != nil {
 		logging.Warnf("stats handler: send message: %v", err)
 	}
 }
 
-func (h *StatsHandler) isAdmin(username string) bool {
-	if username == "" {
-		return false
+// HandleCallback refreshes the stats message in place when the admin presses the
+// keyboard button, so they never have to retype /stats to see current numbers.
+func (h *StatsHandler) HandleCallback(ctx context.Context, sender Sender, update *models.Update) {
+	if update.CallbackQuery == nil || update.CallbackQuery.Data != statsRefreshCallbackData {
+		return
 	}
-	_, ok := h.admins[strings.ToLower(username)]
-	return ok
+	cb := update.CallbackQuery
+
+	msg := cb.Message.Message
+	if msg == nil || msg.Chat.Type != models.ChatTypePrivate || msg.Chat.ID != cb.From.ID {
+		return
+	}
+	if !h.admins.IsAdmin(cb.From.Username) {
+		return
+	}
+
+	if _, err := sender.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.ID,
+	}); err != nil {
+		logging.Warnf("stats handler: answer callback query: %v", err)
+	}
+
+	logging.Debugf("stats handler: refreshing stats for admin @%s", cb.From.Username)
+
+	if _, err := sender.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:      msg.Chat.ID,
+		MessageID:   msg.ID,
+		Text:        formatStats(h.stats.Snapshot(statsTopUsers)),
+		ReplyMarkup: statsKeyboard(),
+	}); err != nil {
+		logging.Warnf("stats handler: edit message text: %v", err)
+	}
+}
+
+func statsKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: statsRefreshButtonText, CallbackData: statsRefreshCallbackData}},
+		},
+	}
 }
 
 func formatStats(snap stats.Snapshot) string {

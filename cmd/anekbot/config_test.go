@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThreeHundredBugs/anekbot/internal/anekbot"
 	"github.com/ThreeHundredBugs/anekbot/internal/llm"
 )
 
@@ -22,7 +23,7 @@ func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"BOT_TOKEN", "ANEKBOT_MODE", "LOG_LEVEL", "PORT", "WEBHOOK_SECRET_TOKEN", "METRICS_TOKEN",
-		"ANEKBOT_CONFIG", "GEMINI_API_KEY", "HF_API_KEY",
+		"ANEKBOT_CONFIG", "GEMINI_API_KEY", "HF_API_KEY", "ANEKBOT_STATS_PERSISTENCE_FILE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -61,8 +62,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.mode != "poll" || cfg.port != "8080" || cfg.webhookPath != "/webhook" || cfg.logLevel != "warn" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.metricsEnabled {
-		t.Error("metrics must default to disabled")
+	if cfg.prometheusEnabled {
+		t.Error("the prometheus endpoint must default to disabled")
 	}
 	if len(cfg.llmProviders) != 0 {
 		t.Errorf("no llm section must mean no providers, got %d", len(cfg.llmProviders))
@@ -72,7 +73,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 func TestLoadConfig_WebhookMode(t *testing.T) {
 	clearEnv(t)
 	setWebhookEnv(t)
-	path := writeConfig(t, `{"bot": {"token": "t", "mode": "webhook"}, "metrics": {"enabled": true}}`)
+	path := writeConfig(t, `{"bot": {"token": "t", "mode": "webhook"}, "stats": {"prometheus": {"enabled": true}}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
 	if err != nil {
@@ -81,8 +82,8 @@ func TestLoadConfig_WebhookMode(t *testing.T) {
 	if cfg.mode != "webhook" {
 		t.Errorf("mode = %q, want webhook", cfg.mode)
 	}
-	if !cfg.metricsEnabled {
-		t.Error("metrics.enabled: true must turn metrics on")
+	if !cfg.prometheusEnabled {
+		t.Error("stats.prometheus.enabled: true must turn the prometheus endpoint on")
 	}
 }
 
@@ -240,16 +241,19 @@ func TestLoadConfig_LLMRateLimit_DefaultsToZeroValue(t *testing.T) {
 func TestLoadConfig_Invalid(t *testing.T) {
 	clearEnv(t)
 	tests := map[string]string{
-		"unknown key":               `{"bot": {"token": "t", "tokn": "x"}}`,
-		"unknown provider":          `{"bot": {"token": "t"}, "llm": {"providers": [{"type": "gpt"}]}}`,
-		"bad promotions":            `{"bot": {"token": "t"}, "anek": {"inline": {"promotions": {"frequency": 2}}}}`,
-		"invalid json":              `{`,
-		"missing bot token":         `{}`,
-		"invalid mode":              `{"bot": {"token": "t", "mode": "carrier-pigeon"}}`,
-		"webhook without secret":    `{"bot": {"token": "t", "mode": "webhook"}}`,
-		"metrics without token":     `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "metrics": {"enabled": true}}`,
-		"metrics path collision":    `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s", "webhook_path": "/hook"}, "metrics": {"enabled": true, "token": "m", "path": "/hook"}}`,
-		"metrics healthz collision": `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "metrics": {"enabled": true, "token": "m", "path": "/healthz"}}`,
+		"unknown key":                           `{"bot": {"token": "t", "tokn": "x"}}`,
+		"unknown provider":                      `{"bot": {"token": "t"}, "llm": {"providers": [{"type": "gpt"}]}}`,
+		"bad promotions":                        `{"bot": {"token": "t"}, "anek": {"inline": {"promotions": {"frequency": 2}}}}`,
+		"invalid json":                          `{`,
+		"missing bot token":                     `{}`,
+		"invalid mode":                          `{"bot": {"token": "t", "mode": "carrier-pigeon"}}`,
+		"webhook without secret":                `{"bot": {"token": "t", "mode": "webhook"}}`,
+		"prometheus without token":              `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true}}}`,
+		"prometheus path collision":             `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s", "webhook_path": "/hook"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/hook"}}}`,
+		"prometheus healthz collision":          `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/healthz"}}}`,
+		"ai joke prompt template without %s":    `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "joke please"}}}`,
+		"ai joke prompt template with two %s":   `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "%s and %s"}}}`,
+		"ai joke prompt template with bad verb": `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "%s and %d"}}}`,
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -260,35 +264,65 @@ func TestLoadConfig_Invalid(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_Metrics(t *testing.T) {
+func TestLoadConfig_LLMSystemPrompt_Default(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("WEBHOOK_SECRET_TOKEN", "s")
-	path := writeConfig(t, `{"bot": {"token": "t"}, "metrics": {"enabled": false}}`)
-
-	cfg, err := loadConfig([]string{"-config", path})
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, `{"bot": {"token": "t"}}`)})
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.metricsEnabled {
-		t.Error("metrics.enabled: false must disable metrics without requiring a token")
+	if cfg.llmSystemPrompt != anekbot.DefaultSystemPrompt {
+		t.Errorf("expected default system prompt, got %q", cfg.llmSystemPrompt)
+	}
+	if cfg.aiJokePromptTemplate != anekbot.DefaultAIJokePromptTemplate {
+		t.Errorf("expected default AI joke prompt template, got %q", cfg.aiJokePromptTemplate)
 	}
 }
 
-func TestLoadConfig_MetricsTokenFileOverridesEnv(t *testing.T) {
+func TestLoadConfig_LLMSystemPrompt_FromFile(t *testing.T) {
+	clearEnv(t)
+	content := `{"bot": {"token": "t"}, "llm": {"system_prompt": "be terse"},
+		"anek": {"inline": {"ai_joke_prompt_template": "tell a joke about %s"}}}`
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, content)})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.llmSystemPrompt != "be terse" {
+		t.Errorf("expected overridden system prompt, got %q", cfg.llmSystemPrompt)
+	}
+	if cfg.aiJokePromptTemplate != "tell a joke about %s" {
+		t.Errorf("expected overridden AI joke prompt template, got %q", cfg.aiJokePromptTemplate)
+	}
+}
+
+func TestLoadConfig_Prometheus(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("WEBHOOK_SECRET_TOKEN", "s")
-	t.Setenv("METRICS_TOKEN", "env-token")
-	path := writeConfig(t, `{"bot": {"token": "t"}, "metrics": {"token": "file-token"}}`)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "stats": {"prometheus": {"enabled": false}}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.metricsToken != "file-token" {
-		t.Errorf("metricsToken = %q, want file value %q to win over env", cfg.metricsToken, "file-token")
+	if cfg.prometheusEnabled {
+		t.Error("stats.prometheus.enabled: false must disable the prometheus endpoint without requiring a token")
 	}
-	if cfg.metricsPath != "/metrics" {
-		t.Errorf("metricsPath = %q, want default %q", cfg.metricsPath, "/metrics")
+}
+
+func TestLoadConfig_PrometheusTokenFileOverridesEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("WEBHOOK_SECRET_TOKEN", "s")
+	t.Setenv("METRICS_TOKEN", "env-token")
+	path := writeConfig(t, `{"bot": {"token": "t"}, "stats": {"prometheus": {"token": "file-token"}}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.prometheusToken != "file-token" {
+		t.Errorf("prometheusToken = %q, want file value %q to win over env", cfg.prometheusToken, "file-token")
+	}
+	if cfg.prometheusPath != "/metrics" {
+		t.Errorf("prometheusPath = %q, want default %q", cfg.prometheusPath, "/metrics")
 	}
 }
 
@@ -303,5 +337,56 @@ func TestLoadConfig_AdminUsernames(t *testing.T) {
 	want := []string{"@Alice", "bob"}
 	if len(cfg.adminUsernames) != len(want) || cfg.adminUsernames[0] != want[0] || cfg.adminUsernames[1] != want[1] {
 		t.Errorf("adminUsernames = %v, want %v", cfg.adminUsernames, want)
+	}
+}
+
+func TestLoadConfig_PersistenceFile_Default(t *testing.T) {
+	clearEnv(t)
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, `{"bot": {"token": "t"}}`)})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.persistenceFile != "" {
+		t.Errorf("persistenceFile = %q, want empty (persistence disabled) by default", cfg.persistenceFile)
+	}
+}
+
+func TestLoadConfig_PersistenceFile_FromFile(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "stats": {"persistence_file": "/var/lib/anekbot/stats.json"}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.persistenceFile != "/var/lib/anekbot/stats.json" {
+		t.Errorf("persistenceFile = %q, want %q", cfg.persistenceFile, "/var/lib/anekbot/stats.json")
+	}
+}
+
+func TestLoadConfig_PersistenceFile_FromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ANEKBOT_STATS_PERSISTENCE_FILE", "/tmp/stats.json")
+
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, `{"bot": {"token": "t"}}`)})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.persistenceFile != "/tmp/stats.json" {
+		t.Errorf("persistenceFile = %q, want %q from env", cfg.persistenceFile, "/tmp/stats.json")
+	}
+}
+
+func TestLoadConfig_PersistenceFile_FileOverridesEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ANEKBOT_STATS_PERSISTENCE_FILE", "/tmp/env-stats.json")
+	path := writeConfig(t, `{"bot": {"token": "t"}, "stats": {"persistence_file": "/tmp/file-stats.json"}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.persistenceFile != "/tmp/file-stats.json" {
+		t.Errorf("persistenceFile = %q, want the file value to win over env", cfg.persistenceFile)
 	}
 }

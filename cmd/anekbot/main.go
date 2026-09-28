@@ -40,13 +40,20 @@ func main() {
 	defer cancel()
 
 	st := stats.New()
+	if cfg.persistenceFile != "" {
+		if err := st.LoadFile(cfg.persistenceFile); err != nil {
+			log.Printf("stats: load %s: %v", cfg.persistenceFile, err)
+		}
+	}
 
 	var anek *anekbot.AnekHandler
 	if cfg.anekEnabled {
 		anek = anekbot.NewAnekHandler()
 		anek.SetInline(cfg.inlineEnabled, cfg.aiJokesEnabled)
+		anek.SetAIJokePromptTemplate(cfg.aiJokePromptTemplate)
 		anek.SetPromotions(cfg.promotions)
 		anek.SetStats(st)
+		anek.SetAdmins(anekbot.NewAdmins(cfg.adminUsernames))
 	}
 
 	var swearing *anekbot.SwearingHandler
@@ -84,7 +91,7 @@ func main() {
 
 	var llmClient *llm.LLM
 	if len(cfg.llmProviders) > 0 {
-		llmClient = anekbot.NewLLM(cfg.llmLimits, cfg.llmProviders...)
+		llmClient = anekbot.NewLLM(cfg.llmSystemPrompt, cfg.llmLimits, cfg.llmProviders...)
 		llmClient.SetRecorder(st)
 	}
 	if anek != nil {
@@ -107,6 +114,14 @@ func main() {
 	case "webhook":
 		runWebhook(ctx, cfg, b, st)
 	}
+
+	// Runs only on graceful shutdown (ctx cancelled by SIGTERM/SIGINT); a SIGKILL or crash
+	// loses stats recorded since the last save, same as any other in-memory state.
+	if cfg.persistenceFile != "" {
+		if err := st.SaveFile(cfg.persistenceFile); err != nil {
+			log.Printf("stats: save %s: %v", cfg.persistenceFile, err)
+		}
+	}
 }
 
 func runWebhook(ctx context.Context, cfg *config, b *bot.Bot, st *stats.Stats) {
@@ -115,8 +130,8 @@ func runWebhook(ctx context.Context, cfg *config, b *bot.Bot, st *stats.Stats) {
 	mux.HandleFunc(healthzPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	if cfg.metricsEnabled {
-		mux.Handle(cfg.metricsPath, st.Handler(cfg.metricsToken))
+	if cfg.prometheusEnabled {
+		mux.Handle(cfg.prometheusPath, st.Handler(cfg.prometheusToken))
 	}
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
