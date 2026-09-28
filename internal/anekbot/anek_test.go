@@ -16,6 +16,7 @@ import (
 	"golang.org/x/text/encoding/charmap"
 
 	"github.com/ThreeHundredBugs/anekbot/internal/llm"
+	"github.com/ThreeHundredBugs/anekbot/internal/stats"
 )
 
 func newTestAnekHandler(t *testing.T, body string, randValue float64) (h *AnekHandler, lastQuery func() url.Values) {
@@ -303,6 +304,129 @@ func TestAnekHandler_HandleInline_NoPromoOmitsReplyMarkupField(t *testing.T) {
 		}
 		if strings.Contains(string(data), `"reply_markup"`) {
 			t.Errorf("result JSON = %s, want no reply_markup field when there's no promo", data)
+		}
+	}
+}
+
+func TestAnekHandler_HandleInline_AdminSay_SendsTextVerbatim(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.SetAdmins(NewAdmins([]string{"@admin"}))
+	sender := &fakeSender{}
+
+	update := &models.Update{InlineQuery: &models.InlineQuery{
+		ID:    "q",
+		Query: "/say Всем привет!",
+		From:  &models.User{ID: 1, Username: "admin"},
+	}}
+
+	h.HandleInline(context.Background(), sender, update)
+
+	if len(sender.inlineAnswers) != 1 {
+		t.Fatalf("expected 1 AnswerInlineQuery call, got %d", len(sender.inlineAnswers))
+	}
+	answer := sender.inlineAnswers[0]
+	if !answer.IsPersonal {
+		t.Error("expected IsPersonal so Telegram never serves this from a shared cache")
+	}
+	if len(answer.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(answer.Results))
+	}
+	article, ok := answer.Results[0].(*models.InlineQueryResultArticle)
+	if !ok {
+		t.Fatalf("result type = %T, want *models.InlineQueryResultArticle", answer.Results[0])
+	}
+	content, ok := article.InputMessageContent.(models.InputTextMessageContent)
+	if !ok {
+		t.Fatalf("input message content type = %T, want models.InputTextMessageContent", article.InputMessageContent)
+	}
+	if content.MessageText != "Всем привет!" {
+		t.Errorf("message text = %q, want %q", content.MessageText, "Всем привет!")
+	}
+}
+
+func TestAnekHandler_HandleInline_AdminSay_IgnoredForNonAdmin(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.SetAdmins(NewAdmins([]string{"admin"}))
+	sender := &fakeSender{}
+
+	update := &models.Update{InlineQuery: &models.InlineQuery{
+		ID:    "q",
+		Query: "/say gotcha",
+		From:  &models.User{ID: 2, Username: "rando"},
+	}}
+
+	h.HandleInline(context.Background(), sender, update)
+
+	if len(sender.inlineAnswers) != 1 || len(sender.inlineAnswers[0].Results) != 1 {
+		t.Fatalf("expected 1 AnswerInlineQuery call with 1 result, got %+v", sender.inlineAnswers)
+	}
+	// A non-admin's "/say ..." falls through to the regular topic-based (AI-joke) path
+	// instead of posting the text verbatim.
+	article := sender.inlineAnswers[0].Results[0].(*models.InlineQueryResultArticle)
+	if article.ID != aiJokeResultID {
+		t.Errorf("result id = %q, want the AI-joke placeholder %q, not the /say text posted verbatim", article.ID, aiJokeResultID)
+	}
+}
+
+func TestAnekHandler_HandleInline_AdminSay_EmptyTextFallsThrough(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.SetAdmins(NewAdmins([]string{"admin"}))
+	sender := &fakeSender{}
+
+	update := &models.Update{InlineQuery: &models.InlineQuery{
+		ID:    "q",
+		Query: "/say   ",
+		From:  &models.User{ID: 1, Username: "admin"},
+	}}
+
+	h.HandleInline(context.Background(), sender, update)
+
+	if len(sender.inlineAnswers) != 1 || len(sender.inlineAnswers[0].Results) == 0 {
+		t.Fatalf("expected a non-/say fallback answer, got %+v", sender.inlineAnswers)
+	}
+	if sender.inlineAnswers[0].Results[0].(*models.InlineQueryResultArticle).ID == sayResultID {
+		t.Error("empty /say text should not be treated as a valid /say command")
+	}
+}
+
+func TestAnekHandler_HandleChosenInlineResult_AdminSay_NoStatsRecorded(t *testing.T) {
+	s := stats.New()
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.SetStats(s)
+	sender := &fakeSender{}
+
+	update := &models.Update{ChosenInlineResult: &models.ChosenInlineResult{
+		ResultID: sayResultID,
+		From:     models.User{ID: 1, Username: "admin"},
+	}}
+
+	h.HandleChosenInlineResult(context.Background(), sender, update)
+
+	if got := s.Snapshot(0).TotalAneks; got != 0 {
+		t.Errorf("total aneks = %d, want 0 (an admin /say isn't a joke)", got)
+	}
+}
+
+func TestParseSayText(t *testing.T) {
+	tests := []struct {
+		query    string
+		wantText string
+		wantOK   bool
+	}{
+		{"/say hello", "hello", true},
+		{"/SAY hello", "hello", true},
+		{"/sayhello", "hello", true},
+		{"/say   hello world  ", "hello world", true},
+		{"/say", "", false},
+		{"/say   ", "", false},
+		{"say: hello", "", false},
+		{"", "", false},
+		{"hello /say world", "", false},
+	}
+	for _, tt := range tests {
+		text, ok := parseSayText(tt.query)
+		if text != tt.wantText || ok != tt.wantOK {
+			t.Errorf("parseSayText(%q) = (%q, %v), want (%q, %v)", tt.query, text, ok, tt.wantText, tt.wantOK)
 		}
 	}
 }

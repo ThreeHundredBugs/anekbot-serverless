@@ -47,6 +47,7 @@ func main() {
 		anek.SetInline(cfg.inlineEnabled, cfg.aiJokesEnabled)
 		anek.SetPromotions(cfg.promotions)
 		anek.SetStats(st)
+		anek.SetAdmins(anekbot.NewAdmins(cfg.adminUsernames))
 	}
 
 	var swearing *anekbot.SwearingHandler

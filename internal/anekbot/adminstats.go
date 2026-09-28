@@ -23,18 +23,11 @@ const (
 
 type StatsHandler struct {
 	stats  *stats.Stats
-	admins map[string]struct{}
+	admins *Admins
 }
 
 func NewStatsHandler(s *stats.Stats, adminUsernames []string) *StatsHandler {
-	admins := make(map[string]struct{}, len(adminUsernames))
-	for _, u := range adminUsernames {
-		u = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(u), "@"))
-		if u != "" {
-			admins[u] = struct{}{}
-		}
-	}
-	return &StatsHandler{stats: s, admins: admins}
+	return &StatsHandler{stats: s, admins: NewAdmins(adminUsernames)}
 }
 
 func (h *StatsHandler) Name() string {
@@ -56,7 +49,7 @@ func (h *StatsHandler) Handle(ctx context.Context, sender Sender, update *models
 	if msg.Chat.Type != models.ChatTypePrivate || msg.From == nil || msg.Chat.ID != msg.From.ID {
 		return
 	}
-	if !h.isAdmin(msg.From.Username) {
+	if !h.admins.IsAdmin(msg.From.Username) {
 		return
 	}
 
@@ -83,7 +76,7 @@ func (h *StatsHandler) HandleCallback(ctx context.Context, sender Sender, update
 	if msg == nil || msg.Chat.Type != models.ChatTypePrivate || msg.Chat.ID != cb.From.ID {
 		return
 	}
-	if !h.isAdmin(cb.From.Username) {
+	if !h.admins.IsAdmin(cb.From.Username) {
 		return
 	}
 
@@ -111,14 +104,6 @@ func statsKeyboard() *models.InlineKeyboardMarkup {
 			{{Text: statsRefreshButtonText, CallbackData: statsRefreshCallbackData}},
 		},
 	}
-}
-
-func (h *StatsHandler) isAdmin(username string) bool {
-	if username == "" {
-		return false
-	}
-	_, ok := h.admins[strings.ToLower(username)]
-	return ok
 }
 
 func formatStats(snap stats.Snapshot) string {

@@ -51,6 +51,9 @@ const (
 	aiJokePendingButtonText   = "⏳"
 	aiJokePendingCallbackData = "ai-joke-pending"
 	classicResultPromoSuffix  = ":promo"
+
+	sayCommandPrefix = "/say"
+	sayResultID      = "admin-say"
 )
 
 const aiJokePromptTemplate = "Придумай короткий анекдот на русском языке на тему: %s. " +
@@ -65,6 +68,7 @@ type AnekHandler struct {
 	promos         *Promotions
 	llm            *llm.LLM
 	stats          *stats.Stats
+	admins         *Admins
 	commandPattern *regexp.Regexp
 
 	inlineFetchDeadline time.Duration
@@ -112,6 +116,10 @@ func (h *AnekHandler) SetStats(s *stats.Stats) {
 	h.stats = s
 }
 
+func (h *AnekHandler) SetAdmins(a *Admins) {
+	h.admins = a
+}
+
 func (h *AnekHandler) SetInline(enabled, aiJokes bool) {
 	h.inlineDisabled = !enabled
 	h.aiJokesDisabled = !aiJokes
@@ -154,6 +162,11 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 		return
 	}
 	query := update.InlineQuery
+
+	if text, ok := parseSayText(query.Query); ok && h.admins.IsAdmin(username(query.From)) {
+		h.answerSayInline(ctx, sender, query, text)
+		return
+	}
 
 	topic := strings.Join(strings.Fields(query.Query), " ")
 	if topic != "" && !h.aiJokesDisabled {
@@ -209,6 +222,35 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 	}
 }
 
+// parseSayText extracts the text after an admin-only "/say <text>" inline query.
+func parseSayText(query string) (string, bool) {
+	trimmed := strings.TrimSpace(query)
+	if !strings.HasPrefix(strings.ToLower(trimmed), sayCommandPrefix) {
+		return "", false
+	}
+	text := strings.TrimSpace(trimmed[len(sayCommandPrefix):])
+	return text, text != ""
+}
+
+// answerSayInline lets an admin post arbitrary text verbatim via inline mode, bypassing
+// both the random-joke fetch and any LLM call.
+func (h *AnekHandler) answerSayInline(ctx context.Context, sender Sender, query *models.InlineQuery, text string) {
+	result := &models.InlineQueryResultArticle{
+		ID:                  sayResultID,
+		Title:               inlineTitle(text),
+		InputMessageContent: models.InputTextMessageContent{MessageText: text},
+	}
+
+	logging.Debugf("anek handler: answering inline query with admin /say text for user=%s", username(query.From))
+	if _, err := sender.AnswerInlineQuery(ctx, &bot.AnswerInlineQueryParams{
+		InlineQueryID: query.ID,
+		Results:       []models.InlineQueryResult{result},
+		IsPersonal:    true, // never let Telegram serve this to a non-admin from a shared cache
+	}); err != nil {
+		logging.Warnf("anek handler: answer inline query: %v", err)
+	}
+}
+
 // answerAIJokePlaceholderInline sends placeholder text; HandleChosenInlineResult fills
 // in the real joke once Telegram reports the user picked this result.
 func (h *AnekHandler) answerAIJokePlaceholderInline(ctx context.Context, sender Sender, query *models.InlineQuery, topic string) {
@@ -243,6 +285,9 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 	chosen := update.ChosenInlineResult
 
+	if chosen.ResultID == sayResultID {
+		return
+	}
 	if chosen.ResultID != aiJokeResultID {
 		// A classic (non-AI) inline joke was actually sent
 		if strings.HasSuffix(chosen.ResultID, classicResultPromoSuffix) {
