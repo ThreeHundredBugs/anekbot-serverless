@@ -28,4 +28,4 @@ node_modules
 /anekbot
 /dist/
 *.test
-config.localtest.json
+*.localtest.json

@@ -10,10 +10,13 @@
     "webhook_secret": ""
   },
 
-  "metrics": {
-    "enabled": true,
-    "path": "/metrics",
-    "token": "replace-me"
+  "stats": {
+    "persistence_file": "",
+    "prometheus": {
+      "enabled": true,
+      "path": "/metrics",
+      "token": "replace-me"
+    }
   },
 
   "admin": {

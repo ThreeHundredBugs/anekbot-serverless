@@ -22,12 +22,16 @@ type config struct {
 	webhookPath   string
 	webhookSecret string
 
-	metricsEnabled bool
-	metricsPath    string
-	metricsToken   string
+	prometheusEnabled bool
+	prometheusPath    string
+	prometheusToken   string
 
 	// adminUsernames are Telegram @handles (no "@")
 	adminUsernames []string
+
+	// persistenceFile is where stats are saved on shutdown and loaded from on startup;
+	// empty disables persistence.
+	persistenceFile string
 
 	// llmProviders is tried in order; empty means no LLM.
 	llmProviders []llm.Provider
@@ -53,11 +57,16 @@ type fileConfig struct {
 		WebhookPath   string `json:"webhook_path"`
 		WebhookSecret string `json:"webhook_secret"`
 	} `json:"server"`
-	Metrics struct {
-		Enabled *bool  `json:"enabled"`
-		Path    string `json:"path"`
-		Token   string `json:"token"`
-	} `json:"metrics"`
+	Stats struct {
+		// PersistenceFile is where stats are saved on shutdown and loaded from on startup;
+		// empty disables persistence.
+		PersistenceFile string `json:"persistence_file"`
+		Prometheus      struct {
+			Enabled *bool  `json:"enabled"`
+			Path    string `json:"path"`
+			Token   string `json:"token"`
+		} `json:"prometheus"`
+	} `json:"stats"`
 	Admin struct {
 		// Usernames are Telegram @handles trusted with the /stats command.
 		Usernames []string `json:"usernames"`
@@ -183,12 +192,13 @@ func loadConfig(args []string) (*config, error) {
 		webhookPath:   or(fc.Server.WebhookPath, "/webhook"),
 		webhookSecret: fileEnvDefault(fc.Server.WebhookSecret, "WEBHOOK_SECRET_TOKEN", ""),
 
-		// Metrics default to disabled, unlike the other *.enabled flags: exposing an HTTP
-		// endpoint is a deliberate opt-in, not a safe default.
-		metricsEnabled: fc.Metrics.Enabled != nil && *fc.Metrics.Enabled,
-		metricsPath:    or(fc.Metrics.Path, "/metrics"),
-		metricsToken:   fileEnvDefault(fc.Metrics.Token, "METRICS_TOKEN", ""),
-		adminUsernames: fc.Admin.Usernames,
+		// The Prometheus endpoint defaults to disabled, unlike the other *.enabled flags:
+		// exposing an HTTP endpoint is a deliberate opt-in, not a safe default.
+		prometheusEnabled: fc.Stats.Prometheus.Enabled != nil && *fc.Stats.Prometheus.Enabled,
+		prometheusPath:    or(fc.Stats.Prometheus.Path, "/metrics"),
+		prometheusToken:   fileEnvDefault(fc.Stats.Prometheus.Token, "METRICS_TOKEN", ""),
+		adminUsernames:    fc.Admin.Usernames,
+		persistenceFile:   fileEnvDefault(fc.Stats.PersistenceFile, "ANEKBOT_STATS_PERSISTENCE_FILE", ""),
 
 		anekEnabled:       enabled(fc.Anek.Enabled),
 		inlineEnabled:     enabled(fc.Anek.Inline.Enabled),
@@ -224,12 +234,12 @@ func loadConfig(args []string) (*config, error) {
 	if cfg.mode == "webhook" && cfg.webhookSecret == "" {
 		return nil, errors.New("webhook mode requires a secret: set WEBHOOK_SECRET_TOKEN or server.webhook_secret in the config file")
 	}
-	if cfg.mode == "webhook" && cfg.metricsEnabled {
-		if cfg.metricsToken == "" {
-			return nil, errors.New("metrics endpoint requires a token: set METRICS_TOKEN or metrics.token in the config file")
+	if cfg.mode == "webhook" && cfg.prometheusEnabled {
+		if cfg.prometheusToken == "" {
+			return nil, errors.New("prometheus endpoint requires a token: set METRICS_TOKEN or stats.prometheus.token in the config file")
 		}
-		if cfg.metricsPath == cfg.webhookPath || cfg.metricsPath == healthzPath {
-			return nil, fmt.Errorf("metrics.path %q collides with an existing server route", cfg.metricsPath)
+		if cfg.prometheusPath == cfg.webhookPath || cfg.prometheusPath == healthzPath {
+			return nil, fmt.Errorf("stats.prometheus.path %q collides with an existing server route", cfg.prometheusPath)
 		}
 	}
 	if _, err := logging.ParseLevel(cfg.logLevel); err != nil {
