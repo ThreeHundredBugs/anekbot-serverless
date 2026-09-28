@@ -56,7 +56,8 @@ const (
 	sayResultID      = "admin-say"
 )
 
-const aiJokePromptTemplate = "Придумай короткий анекдот на русском языке на тему: %s. " +
+// Must contain exactly one %s, which is replaced with the requested topic.
+const DefaultAIJokePromptTemplate = "Придумай короткий анекдот на русском языке на тему: %s. " +
 	"Ответь только текстом анекдота, без вступлений, пояснений и кавычек."
 
 const aiJokeGeneratingMessage = "Генерирую ИИ-анек, подождите немного…"
@@ -74,6 +75,8 @@ type AnekHandler struct {
 	inlineFetchDeadline time.Duration
 	jokeAttemptTimeout  time.Duration
 
+	aiJokePromptTemplate string
+
 	inlineDisabled  bool
 	aiJokesDisabled bool
 }
@@ -87,6 +90,8 @@ func NewAnekHandler() *AnekHandler {
 
 		inlineFetchDeadline: defaultInlineFetchDeadline,
 		jokeAttemptTimeout:  defaultJokeAttemptTimeout,
+
+		aiJokePromptTemplate: DefaultAIJokePromptTemplate,
 	}
 }
 
@@ -123,6 +128,13 @@ func (h *AnekHandler) SetAdmins(a *Admins) {
 func (h *AnekHandler) SetInline(enabled, aiJokes bool) {
 	h.inlineDisabled = !enabled
 	h.aiJokesDisabled = !aiJokes
+}
+
+// SetAIJokePromptTemplate overrides DefaultAIJokePromptTemplate; a no-op if tmpl is empty.
+func (h *AnekHandler) SetAIJokePromptTemplate(tmpl string) {
+	if tmpl != "" {
+		h.aiJokePromptTemplate = tmpl
+	}
 }
 
 func (h *AnekHandler) Name() string {
@@ -310,7 +322,7 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 
 	logging.Debugf("anek handler: generating AI joke for topic %q", topic)
-	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(aiJokePromptTemplate, topic))
+	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
 	if err != nil {
 		logging.Warnf("anek handler: generate AI joke: %v", err)
 		h.editInlineMessage(ctx, sender, chosen.InlineMessageID, llmErrorMessage(err), false, false)

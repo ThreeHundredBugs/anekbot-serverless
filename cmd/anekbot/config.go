@@ -34,8 +34,11 @@ type config struct {
 	persistenceFile string
 
 	// llmProviders is tried in order; empty means no LLM.
-	llmProviders []llm.Provider
-	llmLimits    llm.Limits
+	llmProviders    []llm.Provider
+	llmLimits       llm.Limits
+	llmSystemPrompt string
+
+	aiJokePromptTemplate string
 
 	anekEnabled       bool
 	inlineEnabled     bool
@@ -74,6 +77,8 @@ type fileConfig struct {
 	LLM struct {
 		Providers []providerConfig `json:"providers"`
 		RateLimit rateLimitConfig  `json:"rate_limit"`
+		// SystemPrompt is sent to the LLM for both question-answering and AI joke generation.
+		SystemPrompt string `json:"system_prompt"`
 	} `json:"llm"`
 	Anek struct {
 		Enabled *bool `json:"enabled"`
@@ -81,6 +86,8 @@ type fileConfig struct {
 			Enabled    *bool                     `json:"enabled"`
 			AIJokes    *bool                     `json:"ai_jokes"`
 			Promotions *anekbot.PromotionsConfig `json:"promotions"`
+			// AIJokePromptTemplate must contain exactly one %s, replaced with the requested topic.
+			AIJokePromptTemplate string `json:"ai_joke_prompt_template"`
 		} `json:"inline"`
 	} `json:"anek"`
 	Questions struct {
@@ -207,6 +214,9 @@ func loadConfig(args []string) (*config, error) {
 		swearingEnabled:   enabled(fc.Swearing.Enabled),
 		swearingWordsFile: fc.Swearing.WordsFile,
 		llmLimits:         fc.LLM.RateLimit.toLimits(),
+		llmSystemPrompt:   or(fc.LLM.SystemPrompt, anekbot.DefaultSystemPrompt),
+
+		aiJokePromptTemplate: or(fc.Anek.Inline.AIJokePromptTemplate, anekbot.DefaultAIJokePromptTemplate),
 	}
 
 	for _, pc := range fc.LLM.Providers {
@@ -245,8 +255,38 @@ func loadConfig(args []string) (*config, error) {
 	if _, err := logging.ParseLevel(cfg.logLevel); err != nil {
 		return nil, err
 	}
+	if err := validateAIJokePromptTemplate(cfg.aiJokePromptTemplate); err != nil {
+		return nil, fmt.Errorf("anek.inline.ai_joke_prompt_template: %w", err)
+	}
 
 	return cfg, nil
+}
+
+// validateAIJokePromptTemplate rejects a template that fmt.Sprintf wouldn't fill with exactly
+// the joke topic: anything other than one %s verb (%% counts as a literal, not a verb).
+func validateAIJokePromptTemplate(tmpl string) error {
+	verbs := 0
+	for i := 0; i < len(tmpl); i++ {
+		if tmpl[i] != '%' {
+			continue
+		}
+		if i+1 >= len(tmpl) {
+			return fmt.Errorf("trailing %% in %q", tmpl)
+		}
+		switch tmpl[i+1] {
+		case '%':
+			i++
+		case 's':
+			verbs++
+			i++
+		default:
+			return fmt.Errorf("unsupported verb %%%c in %q: only %%s and %%%% are allowed", tmpl[i+1], tmpl)
+		}
+	}
+	if verbs != 1 {
+		return fmt.Errorf("must contain exactly one %%s verb, found %d: %q", verbs, tmpl)
+	}
+	return nil
 }
 
 func or(v, def string) string {

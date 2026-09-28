@@ -105,7 +105,7 @@ func TestAnekHandler_HandleChosenInlineResult_AttachesPromotion(t *testing.T) {
 	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.1, 0.5))
 	sender := &fakeSender{}
-	h.SetLLM(NewLLM(llm.Limits{}, &fakeLLMProvider{answer: "joke"}))
+	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "joke"}))
 
 	h.HandleChosenInlineResult(context.Background(), sender, &models.Update{ChosenInlineResult: &models.ChosenInlineResult{
 		ResultID: aiJokeResultID, Query: "cats", InlineMessageID: "m",

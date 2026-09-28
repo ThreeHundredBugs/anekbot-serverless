@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ThreeHundredBugs/anekbot/internal/anekbot"
 	"github.com/ThreeHundredBugs/anekbot/internal/llm"
 )
 
@@ -240,16 +241,19 @@ func TestLoadConfig_LLMRateLimit_DefaultsToZeroValue(t *testing.T) {
 func TestLoadConfig_Invalid(t *testing.T) {
 	clearEnv(t)
 	tests := map[string]string{
-		"unknown key":                  `{"bot": {"token": "t", "tokn": "x"}}`,
-		"unknown provider":             `{"bot": {"token": "t"}, "llm": {"providers": [{"type": "gpt"}]}}`,
-		"bad promotions":               `{"bot": {"token": "t"}, "anek": {"inline": {"promotions": {"frequency": 2}}}}`,
-		"invalid json":                 `{`,
-		"missing bot token":            `{}`,
-		"invalid mode":                 `{"bot": {"token": "t", "mode": "carrier-pigeon"}}`,
-		"webhook without secret":       `{"bot": {"token": "t", "mode": "webhook"}}`,
-		"prometheus without token":     `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true}}}`,
-		"prometheus path collision":    `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s", "webhook_path": "/hook"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/hook"}}}`,
-		"prometheus healthz collision": `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/healthz"}}}`,
+		"unknown key":                           `{"bot": {"token": "t", "tokn": "x"}}`,
+		"unknown provider":                      `{"bot": {"token": "t"}, "llm": {"providers": [{"type": "gpt"}]}}`,
+		"bad promotions":                        `{"bot": {"token": "t"}, "anek": {"inline": {"promotions": {"frequency": 2}}}}`,
+		"invalid json":                          `{`,
+		"missing bot token":                     `{}`,
+		"invalid mode":                          `{"bot": {"token": "t", "mode": "carrier-pigeon"}}`,
+		"webhook without secret":                `{"bot": {"token": "t", "mode": "webhook"}}`,
+		"prometheus without token":              `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true}}}`,
+		"prometheus path collision":             `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s", "webhook_path": "/hook"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/hook"}}}`,
+		"prometheus healthz collision":          `{"bot": {"token": "t", "mode": "webhook"}, "server": {"webhook_secret": "s"}, "stats": {"prometheus": {"enabled": true, "token": "m", "path": "/healthz"}}}`,
+		"ai joke prompt template without %s":    `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "joke please"}}}`,
+		"ai joke prompt template with two %s":   `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "%s and %s"}}}`,
+		"ai joke prompt template with bad verb": `{"bot": {"token": "t"}, "anek": {"inline": {"ai_joke_prompt_template": "%s and %d"}}}`,
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -257,6 +261,36 @@ func TestLoadConfig_Invalid(t *testing.T) {
 				t.Error("expected error")
 			}
 		})
+	}
+}
+
+func TestLoadConfig_LLMSystemPrompt_Default(t *testing.T) {
+	clearEnv(t)
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, `{"bot": {"token": "t"}}`)})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.llmSystemPrompt != anekbot.DefaultSystemPrompt {
+		t.Errorf("expected default system prompt, got %q", cfg.llmSystemPrompt)
+	}
+	if cfg.aiJokePromptTemplate != anekbot.DefaultAIJokePromptTemplate {
+		t.Errorf("expected default AI joke prompt template, got %q", cfg.aiJokePromptTemplate)
+	}
+}
+
+func TestLoadConfig_LLMSystemPrompt_FromFile(t *testing.T) {
+	clearEnv(t)
+	content := `{"bot": {"token": "t"}, "llm": {"system_prompt": "be terse"},
+		"anek": {"inline": {"ai_joke_prompt_template": "tell a joke about %s"}}}`
+	cfg, err := loadConfig([]string{"-config", writeConfig(t, content)})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.llmSystemPrompt != "be terse" {
+		t.Errorf("expected overridden system prompt, got %q", cfg.llmSystemPrompt)
+	}
+	if cfg.aiJokePromptTemplate != "tell a joke about %s" {
+		t.Errorf("expected overridden AI joke prompt template, got %q", cfg.aiJokePromptTemplate)
 	}
 }
 

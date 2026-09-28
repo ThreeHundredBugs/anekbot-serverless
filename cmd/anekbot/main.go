@@ -50,6 +50,7 @@ func main() {
 	if cfg.anekEnabled {
 		anek = anekbot.NewAnekHandler()
 		anek.SetInline(cfg.inlineEnabled, cfg.aiJokesEnabled)
+		anek.SetAIJokePromptTemplate(cfg.aiJokePromptTemplate)
 		anek.SetPromotions(cfg.promotions)
 		anek.SetStats(st)
 		anek.SetAdmins(anekbot.NewAdmins(cfg.adminUsernames))
@@ -90,7 +91,7 @@ func main() {
 
 	var llmClient *llm.LLM
 	if len(cfg.llmProviders) > 0 {
-		llmClient = anekbot.NewLLM(cfg.llmLimits, cfg.llmProviders...)
+		llmClient = anekbot.NewLLM(cfg.llmSystemPrompt, cfg.llmLimits, cfg.llmProviders...)
 		llmClient.SetRecorder(st)
 	}
 	if anek != nil {
