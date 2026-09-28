@@ -2,6 +2,7 @@ package anekbot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -276,6 +277,32 @@ func TestAnekHandler_HandleInline(t *testing.T) {
 		}
 		if strings.Contains(article.Title, "\n") {
 			t.Errorf("title = %q, should not contain newlines", article.Title)
+		}
+	}
+}
+
+// A nil *InlineKeyboardMarkup assigned straight into the ReplyMarkup interface field
+// survives as a non-nil interface holding a nil pointer, which encoding/json's omitempty
+// does not treat as empty: it serializes as reply_markup:null. Telegram then rejects the
+// whole inline answer with "Field reply_markup must be of type Object", dropping all 3
+// results. This guards against that regression whenever there's no promo to attach.
+func TestAnekHandler_HandleInline_NoPromoOmitsReplyMarkupField(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.5)) // roll >= frequency -> no promo picked
+	sender := &fakeSender{}
+
+	h.HandleInline(context.Background(), sender, &models.Update{InlineQuery: &models.InlineQuery{ID: "q"}})
+
+	if len(sender.inlineAnswers) != 1 || len(sender.inlineAnswers[0].Results) != inlineSuggestionCount {
+		t.Fatalf("expected %d results, got %+v", inlineSuggestionCount, sender.inlineAnswers)
+	}
+	for _, result := range sender.inlineAnswers[0].Results {
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		if strings.Contains(string(data), `"reply_markup"`) {
+			t.Errorf("result JSON = %s, want no reply_markup field when there's no promo", data)
 		}
 	}
 }

@@ -184,15 +184,19 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 		// the user picks unless inline feedback is enabled
 		markup := h.promos.Keyboard()
 		resultID := strconv.Itoa(i)
-		if markup != nil {
-			resultID += classicResultPromoSuffix
-		}
-		results = append(results, &models.InlineQueryResultArticle{
+		article := &models.InlineQueryResultArticle{
 			ID:                  resultID,
 			Title:               inlineTitle(joke),
 			InputMessageContent: models.InputTextMessageContent{MessageText: joke},
-			ReplyMarkup:         markup,
-		})
+		}
+		if markup != nil {
+			// A nil *InlineKeyboardMarkup assigned directly to the ReplyMarkup interface field
+			// survives as a non-nil interface holding a nil pointer, which Telegram rejects as
+			// reply_markup:null instead of an omitted field.
+			article.ID += classicResultPromoSuffix
+			article.ReplyMarkup = markup
+		}
+		results = append(results, article)
 	}
 
 	logging.Debugf("anek handler: answering inline query with %d results", len(results))
