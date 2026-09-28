@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-telegram/bot/models"
@@ -39,6 +40,9 @@ func newTestAnekHandler(t *testing.T, body string, randValue float64) (h *AnekHa
 		baseURL:        server.URL,
 		randFloat:      func() float64 { return randValue },
 		commandPattern: anekCommandPattern(""),
+
+		inlineFetchDeadline: defaultInlineFetchDeadline,
+		jokeAttemptTimeout:  defaultJokeAttemptTimeout,
 	}
 	lastQuery = func() url.Values {
 		mu.Lock()
@@ -547,6 +551,65 @@ func TestAnekHandler_SetInline_DisabledIgnoresInlineQueries(t *testing.T) {
 	if len(sender.inlineAnswers) != 0 {
 		t.Errorf("expected no answer with inline disabled, got %d", len(sender.inlineAnswers))
 	}
+}
+
+func TestAnekHandler_HandleInline_RetriesFailedFetchThenSucceeds(t *testing.T) {
+	wantJoke := "joke"
+	fixture := `{"content":"` + wantJoke + `"}`
+	win1251Body, err := charmap.Windows1251.NewEncoder().String(fixture)
+	if err != nil {
+		t.Fatalf("encode fixture as windows-1251: %v", err)
+	}
+
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&requestCount, 1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(win1251Body))
+	}))
+	t.Cleanup(server.Close)
+
+	h := &AnekHandler{
+		client:              server.Client(),
+		baseURL:             server.URL,
+		randFloat:           func() float64 { return 0.1 },
+		commandPattern:      anekCommandPattern(""),
+		inlineFetchDeadline: defaultInlineFetchDeadline,
+		jokeAttemptTimeout:  defaultJokeAttemptTimeout,
+	}
+	sender := &fakeSender{}
+
+	h.HandleInline(context.Background(), sender, &models.Update{InlineQuery: &models.InlineQuery{ID: "q"}})
+
+	if len(sender.inlineAnswers) != 1 || len(sender.inlineAnswers[0].Results) != inlineSuggestionCount {
+		t.Fatalf("expected the failed fetch to be retried and all %d results returned, got %+v", inlineSuggestionCount, sender.inlineAnswers)
+	}
+	if got := atomic.LoadInt32(&requestCount); got <= inlineSuggestionCount {
+		t.Errorf("expected a retry beyond the initial %d requests, got %d requests total", inlineSuggestionCount, got)
+	}
+}
+
+func TestAnekHandler_HandleInline_ShowsFewerThanThreeWhenSomeFetchesFail(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h.client = &http.Client{Timeout: h.client.Timeout, Transport: alwaysFailTransport{}}
+	sender := &fakeSender{}
+
+	h.HandleInline(context.Background(), sender, &models.Update{InlineQuery: &models.InlineQuery{ID: "q"}})
+
+	if len(sender.inlineAnswers) != 1 {
+		t.Fatalf("expected 1 AnswerInlineQuery call even when every fetch fails, got %d", len(sender.inlineAnswers))
+	}
+	if got := len(sender.inlineAnswers[0].Results); got != 0 {
+		t.Errorf("expected 0 results when every fetch fails, got %d", got)
+	}
+}
+
+type alwaysFailTransport struct{}
+
+func (alwaysFailTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("simulated network failure")
 }
 
 func TestAnekHandler_SetInline_AIJokesDisabledFallsBackToRegularJokes(t *testing.T) {

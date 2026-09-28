@@ -2,6 +2,7 @@ package anekbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -35,6 +36,12 @@ const (
 	inlineSuggestionCount = 3
 	inlineTitleMaxRunes   = 60
 
+	// Telegram rejects answers to inline queries older than ~10s with "query is too old".
+	defaultInlineFetchDeadline = 7 * time.Second
+	defaultJokeAttemptTimeout  = 3 * time.Second
+	inlineFetchRetryDelay      = 200 * time.Millisecond
+	inlineFetchMaxAttempts     = 3
+
 	inlineAITitlePrefix  = "Сгенерировать ИИ-анек на тему "
 	inlineAITextMaxRunes = 100
 	inlineAICacheSeconds = 120
@@ -60,6 +67,9 @@ type AnekHandler struct {
 	stats          *stats.Stats
 	commandPattern *regexp.Regexp
 
+	inlineFetchDeadline time.Duration
+	jokeAttemptTimeout  time.Duration
+
 	inlineDisabled  bool
 	aiJokesDisabled bool
 }
@@ -70,6 +80,9 @@ func NewAnekHandler() *AnekHandler {
 		baseURL:        defaultBaseURL,
 		randFloat:      rand.Float64,
 		commandPattern: anekCommandPattern(""),
+
+		inlineFetchDeadline: defaultInlineFetchDeadline,
+		jokeAttemptTimeout:  defaultJokeAttemptTimeout,
 	}
 }
 
@@ -148,18 +161,16 @@ func (h *AnekHandler) HandleInline(ctx context.Context, sender Sender, update *m
 		return
 	}
 
+	fetchCtx, cancel := context.WithTimeout(ctx, h.inlineFetchDeadline)
+	defer cancel()
+
 	jokes := make([]string, inlineSuggestionCount)
 	var wg sync.WaitGroup
 	wg.Add(inlineSuggestionCount)
 	for i := range jokes {
 		go func(i int) {
 			defer wg.Done()
-			joke, err := h.fetchJoke(ctx)
-			if err != nil {
-				logging.Warnf("anek handler: fetch joke for inline query: %v", err)
-				return
-			}
-			jokes[i] = joke
+			jokes[i] = h.fetchJokeWithRetry(fetchCtx)
 		}(i)
 	}
 	wg.Wait()
@@ -313,6 +324,29 @@ func inlineTitle(joke string) string {
 	return string(runes[:inlineTitleMaxRunes]) + "…"
 }
 
+// fetchJokeWithRetry returns "" if every attempt failed or ctx expired.
+func (h *AnekHandler) fetchJokeWithRetry(ctx context.Context) string {
+	for attempt := 1; attempt <= inlineFetchMaxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, h.jokeAttemptTimeout)
+		joke, err := h.fetchJoke(attemptCtx)
+		cancel()
+		if err == nil {
+			return joke
+		}
+		logging.Warnf("anek handler: fetch joke for inline query (attempt %d/%d): %v", attempt, inlineFetchMaxAttempts, err)
+
+		if attempt == inlineFetchMaxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(inlineFetchRetryDelay):
+		}
+	}
+	return ""
+}
+
 func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	anekType := anekTypeNormal
 	if h.randFloat() > 0.85 {
@@ -331,6 +365,10 @@ func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %s", resp.Status)
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, anekMaxResponseBytes))
 	if err != nil {
 		return "", err
@@ -345,5 +383,8 @@ func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	// The response isn't valid JSON
 	joke := strings.TrimPrefix(string(utf8Body), `{"content":"`)
 	joke = strings.TrimSuffix(joke, `"}`)
+	if strings.TrimSpace(joke) == "" {
+		return "", errors.New("empty joke")
+	}
 	return truncateToRunes(joke, telegramMessageMaxRunes), nil
 }
