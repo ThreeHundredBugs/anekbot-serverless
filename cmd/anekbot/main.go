@@ -93,6 +93,7 @@ func main() {
 	if len(cfg.llmProviders) > 0 {
 		llmClient = anekbot.NewLLM(cfg.llmSystemPrompt, cfg.llmLimits, cfg.llmProviders...)
 		llmClient.SetRecorder(st)
+		llmClient.SetAlgorithm(cfg.llmAlgorithm)
 	}
 	if anek != nil {
 		anek.SetLLM(llmClient)

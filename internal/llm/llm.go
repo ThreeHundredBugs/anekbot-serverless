@@ -3,7 +3,9 @@ package llm
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ThreeHundredBugs/anekbot/internal/flowcontrol"
@@ -82,6 +84,11 @@ type LLM struct {
 	providers    []Provider
 	recorder     Recorder
 
+	algorithm Algorithm
+	cycle     []int // weighted round-robin cycle; built by SetAlgorithm(RoundRobin)
+	cursor    atomic.Uint64
+	randFloat func() float64
+
 	concurrency *flowcontrol.Semaphore
 	perUser     *flowcontrol.PerKeyLimiter[UserID]
 }
@@ -92,6 +99,7 @@ func New(systemPrompt string, limits Limits, providers ...Provider) *LLM {
 		systemPrompt: systemPrompt,
 		providers:    providers,
 		recorder:     noopRecorder{},
+		randFloat:    rand.Float64,
 		concurrency:  flowcontrol.NewSemaphore(limits.MaxConcurrent),
 		perUser: &flowcontrol.PerKeyLimiter[UserID]{
 			Limit:         limits.PerUserLimit,
@@ -107,6 +115,26 @@ func (l *LLM) SetRecorder(r Recorder) {
 		r = noopRecorder{}
 	}
 	l.recorder = r
+}
+
+// SetAlgorithm picks how Ask orders provider attempts; the zero value (Order) is today's
+// fixed config-order fallback. Like SetRecorder, this is one-time startup wiring and must
+// not be called concurrently with Ask.
+func (l *LLM) SetAlgorithm(algo Algorithm) {
+	l.algorithm = algo
+	if algo == RoundRobin {
+		l.cycle = buildCycle(l.providers)
+	}
+}
+
+func buildCycle(providers []Provider) []int {
+	cycle := make([]int, 0, len(providers))
+	for i, p := range providers {
+		for j := 0; j < providerWeight(p); j++ {
+			cycle = append(cycle, i)
+		}
+	}
+	return cycle
 }
 
 func (l *LLM) AskFor(ctx context.Context, userID UserID, question string) (answer, providerName string, err error) {
@@ -130,7 +158,8 @@ func (l *LLM) AskFor(ctx context.Context, userID UserID, question string) (answe
 }
 
 func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName string, err error) {
-	for i, provider := range l.providers {
+	for attempt, idx := range l.attemptOrder() {
+		provider := l.providers[idx]
 		start := time.Now()
 		answer, err = provider.Ask(ctx, l.systemPrompt, question)
 		if err == nil && strings.TrimSpace(answer) == "" {
@@ -140,16 +169,86 @@ func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName st
 
 		if err == nil {
 			logging.Debugf("llm: %s answered", provider.Name())
-			if i > 0 {
+			if attempt > 0 {
 				l.recorder.ObserveFallback()
 			}
 			return answer, provider.Name(), nil
 		}
-		if i == 0 {
+		if attempt == 0 {
 			logging.Warnf("llm: primary provider: %v", err)
 		} else {
 			logging.Warnf("llm: fallback provider %s: %v", provider.Name(), err)
 		}
 	}
 	return "", "", err
+}
+
+func (l *LLM) attemptOrder() []int {
+	switch l.algorithm {
+	case RoundRobin:
+		return l.roundRobinOrder()
+	case Random:
+		return l.randomOrder()
+	default:
+		return identityOrder(len(l.providers))
+	}
+}
+
+func identityOrder(n int) []int {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	return order
+}
+
+// roundRobinOrder advances the shared cursor exactly once per request (not per attempt), so a
+// request that falls back doesn't throw off the next request's starting point, then walks the
+// weighted cycle from there, deduping so each provider is tried at most once.
+func (l *LLM) roundRobinOrder() []int {
+	n := len(l.cycle)
+	if n == 0 {
+		return nil
+	}
+	start := l.cursor.Add(1) - 1
+	seen := make(map[int]bool, len(l.providers))
+	order := make([]int, 0, len(l.providers))
+	for i := 0; i < n && len(order) < len(l.providers); i++ {
+		idx := l.cycle[(int(start)+i)%n]
+		if !seen[idx] {
+			seen[idx] = true
+			order = append(order, idx)
+		}
+	}
+	return order
+}
+
+// randomOrder draws providers without replacement, each round weighted among those not yet
+// picked, the same "subtract weight until negative" idiom Promotions.Pick uses.
+func (l *LLM) randomOrder() []int {
+	remaining := identityOrder(len(l.providers))
+	weights := make([]int, len(remaining))
+	for i, idx := range remaining {
+		weights[i] = providerWeight(l.providers[idx])
+	}
+
+	order := make([]int, 0, len(remaining))
+	for len(remaining) > 0 {
+		total := 0
+		for _, w := range weights {
+			total += w
+		}
+		target := l.randFloat() * float64(total)
+		pick := 0
+		for ; pick < len(remaining)-1; pick++ {
+			target -= float64(weights[pick])
+			if target < 0 {
+				break
+			}
+		}
+		order = append(order, remaining[pick])
+		remaining = append(remaining[:pick], remaining[pick+1:]...)
+		weights = append(weights[:pick], weights[pick+1:]...)
+	}
+	return order
 }

@@ -37,6 +37,7 @@ type config struct {
 	llmProviders    []llm.Provider
 	llmLimits       llm.Limits
 	llmSystemPrompt string
+	llmAlgorithm    llm.Algorithm
 
 	aiJokePromptTemplate string
 
@@ -78,7 +79,11 @@ type fileConfig struct {
 		Providers []providerConfig `json:"providers"`
 		RateLimit rateLimitConfig  `json:"rate_limit"`
 		// SystemPrompt is sent to the LLM for both question-answering and AI joke generation.
-		SystemPrompt string `json:"system_prompt"`
+		SystemPrompt  string `json:"system_prompt"`
+		LoadBalancing struct {
+			// Algorithm is "order" (default), "round_robin" or "random"; see llm.ParseAlgorithm.
+			Algorithm string `json:"algorithm"`
+		} `json:"load_balancing"`
 	} `json:"llm"`
 	Anek struct {
 		Enabled *bool `json:"enabled"`
@@ -108,6 +113,9 @@ type providerConfig struct {
 	APIKey string `json:"api_key"`
 	// Gemini holds settings specific to Type == "gemini"; nil for any other type.
 	Gemini *geminiProviderConfig `json:"gemini"`
+	// Weight controls selection frequency under llm.load_balancing's round_robin/random;
+	// ignored by order. Omitted means 1; must be >= 1 if given under round_robin or random.
+	Weight *int `json:"weight"`
 }
 
 type geminiProviderConfig struct {
@@ -156,14 +164,22 @@ func buildProvider(pc providerConfig) (llm.Provider, error) {
 			return nil, nil
 		}
 	}
+	var provider llm.Provider
 	if pc.Type == "gemini" {
 		var thinkingBudget *int
 		if pc.Gemini != nil {
 			thinkingBudget = pc.Gemini.ThinkingBudget
 		}
-		return llm.NewGeminiProvider(key, pc.Model, thinkingBudget), nil
+		provider = llm.NewGeminiProvider(key, pc.Model, thinkingBudget)
+	} else {
+		provider = llm.NewHuggingFaceProvider(key, pc.Model)
 	}
-	return llm.NewHuggingFaceProvider(key, pc.Model), nil
+
+	weight := 1
+	if pc.Weight != nil {
+		weight = *pc.Weight
+	}
+	return llm.WithWeight(provider, weight), nil
 }
 
 func loadFileConfig(path string) (*fileConfig, error) {
@@ -229,7 +245,23 @@ func loadConfig(args []string) (*config, error) {
 		aiJokePromptTemplate: or(fc.Anek.Inline.AIJokePromptTemplate, anekbot.DefaultAIJokePromptTemplate),
 	}
 
-	for _, pc := range fc.LLM.Providers {
+	algo, err := llm.ParseAlgorithm(fc.LLM.LoadBalancing.Algorithm)
+	if err != nil {
+		return nil, fmt.Errorf("llm.load_balancing.algorithm: %w", err)
+	}
+	cfg.llmAlgorithm = algo
+
+	totalWeight := 0
+	for i, pc := range fc.LLM.Providers {
+		if algo != llm.Order && pc.Weight != nil && *pc.Weight < 1 {
+			return nil, fmt.Errorf("llm.providers[%d]: weight must be >= 1 for algorithm %q, got %d", i, algo, *pc.Weight)
+		}
+		weight := 1
+		if pc.Weight != nil {
+			weight = *pc.Weight
+		}
+		totalWeight += weight
+
 		provider, err := buildProvider(pc)
 		if err != nil {
 			return nil, err
@@ -237,6 +269,9 @@ func loadConfig(args []string) (*config, error) {
 		if provider != nil {
 			cfg.llmProviders = append(cfg.llmProviders, provider)
 		}
+	}
+	if algo == llm.RoundRobin && totalWeight > llm.MaxRoundRobinWeight {
+		return nil, fmt.Errorf("llm.providers: total weight %d exceeds max %d for algorithm %q", totalWeight, llm.MaxRoundRobinWeight, algo)
 	}
 
 	if fc.Anek.Inline.Promotions != nil {

@@ -197,6 +197,114 @@ func TestLoadConfig_LLMProviderGeminiThinkingBudget(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_LoadBalancingDefaultsToOrder(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
+		{"type": "gemini", "api_key": "k"}
+	]}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.llmAlgorithm != llm.Order {
+		t.Errorf("algorithm = %v, want %v (omitting load_balancing must keep today's behavior)", cfg.llmAlgorithm, llm.Order)
+	}
+}
+
+func TestLoadConfig_LoadBalancingParsesAlgorithm(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"type": "gemini", "api_key": "k"}],
+		"load_balancing": {"algorithm": "round_robin"}
+	}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.llmAlgorithm != llm.RoundRobin {
+		t.Errorf("algorithm = %v, want %v", cfg.llmAlgorithm, llm.RoundRobin)
+	}
+}
+
+func TestLoadConfig_LoadBalancingRejectsUnknownAlgorithm(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"type": "gemini", "api_key": "k"}],
+		"load_balancing": {"algorithm": "bogus"}
+	}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err == nil {
+		t.Error("expected an error for an unknown load_balancing.algorithm")
+	}
+}
+
+func TestLoadConfig_ProviderWeightIgnoredUnderOrder(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
+		{"type": "gemini", "api_key": "k", "weight": 0}
+	]}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err != nil {
+		t.Fatalf("loadConfig: %v (weight should be irrelevant under the default order algorithm)", err)
+	}
+}
+
+func TestLoadConfig_ProviderWeightRejectedBelowOneUnderRoundRobin(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"type": "gemini", "api_key": "k", "weight": 0}],
+		"load_balancing": {"algorithm": "round_robin"}
+	}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err == nil {
+		t.Error("expected an error for weight < 1 under round_robin")
+	}
+}
+
+func TestLoadConfig_ProviderWeightRejectedBelowOneUnderRandom(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"type": "gemini", "api_key": "k", "weight": -1}],
+		"load_balancing": {"algorithm": "random"}
+	}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err == nil {
+		t.Error("expected an error for weight < 1 under random")
+	}
+}
+
+func TestLoadConfig_TotalWeightCapExceededUnderRoundRobin(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [
+			{"type": "gemini", "api_key": "k", "weight": 600},
+			{"type": "huggingface", "api_key": "k", "weight": 600}
+		],
+		"load_balancing": {"algorithm": "round_robin"}
+	}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err == nil {
+		t.Error("expected an error when total weight exceeds the round_robin cap")
+	}
+}
+
+func TestLoadConfig_TotalWeightCapNotEnforcedUnderRandom(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [
+			{"type": "gemini", "api_key": "k", "weight": 600},
+			{"type": "huggingface", "api_key": "k", "weight": 600}
+		],
+		"load_balancing": {"algorithm": "random"}
+	}}`)
+
+	if _, err := loadConfig([]string{"-config", path}); err != nil {
+		t.Errorf("loadConfig: %v (the weight cap only matters for round_robin's materialized cycle)", err)
+	}
+}
+
 func TestLoadConfig_LLMProviderAPIKeyWinsOverEnv(t *testing.T) {
 	clearEnv(t)
 	// api_key_env points at an unset var; if it were used instead of api_key, the provider

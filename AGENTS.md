@@ -23,7 +23,10 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
   `fake_sender_test.go` implements for tests instead of hitting the real Bot API.
 - `internal/llm/` — LLM provider implementations (Gemini, HuggingFace) behind a common
   `Provider` interface; `internal/anekbot/llm.go` wraps them with per-user/global rate
-  limiting (`internal/flowcontrol/`) and fallback between providers.
+  limiting (`internal/flowcontrol/`). `LLM.Ask` tries providers in an order built fresh per
+  request by `Algorithm` (`Order` default/fixed-list, `RoundRobin`, `Random`; see
+  `algorithm.go`); `WithWeight` (`weight.go`) attaches an optional per-provider weight used
+  by `RoundRobin`/`Random` without changing the `Provider` interface or `New`'s signature.
 - `internal/stats/` — in-memory counters (`stats.go`, backed by
   `github.com/VictoriaMetrics/metrics` for Prometheus export plus a few `atomic.Int64`
   fields for the totals `/stats` needs) and file persistence (`persist.go`).
