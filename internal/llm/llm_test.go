@@ -156,6 +156,7 @@ func TestAskRoundRobinFallsBackToNextInCycle(t *testing.T) {
 type stubProvider struct{ name, answer string }
 
 func (p stubProvider) Name() string                                        { return p.name }
+func (p stubProvider) Weight() int                                         { return 1 }
 func (p stubProvider) Ask(context.Context, string, string) (string, error) { return p.answer, nil }
 
 func TestRoundRobinCursorIsRaceSafe(t *testing.T) {
@@ -214,8 +215,7 @@ func TestAskRandomFallsBackAmongRemainingUntilExhausted(t *testing.T) {
 	}
 }
 
-func TestProviderWithoutWeightMethodDefaultsToOne(t *testing.T) {
-	// stubProvider implements Provider but not the weighter interface.
+func TestAskRoundRobinSplitsEvenlyAtEqualWeight(t *testing.T) {
 	l := New("prompt", Limits{}, stubProvider{name: "A", answer: "a"}, stubProvider{name: "B", answer: "b"})
 	l.SetAlgorithm(RoundRobin)
 

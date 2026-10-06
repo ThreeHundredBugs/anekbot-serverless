@@ -40,6 +40,11 @@ func main() {
 	defer cancel()
 
 	st := stats.New()
+	providerNames := make([]string, len(cfg.llmProviders))
+	for i, p := range cfg.llmProviders {
+		providerNames[i] = p.Name()
+	}
+	st.RegisterLLMProviders(providerNames)
 	if cfg.persistenceFile != "" {
 		if err := st.LoadFile(cfg.persistenceFile); err != nil {
 			log.Printf("stats: load %s: %v", cfg.persistenceFile, err)

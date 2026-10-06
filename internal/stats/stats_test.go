@@ -105,14 +105,15 @@ func TestRecordAnek_ActiveNewUserDisplacesLeastActiveOnceFull(t *testing.T) {
 
 func TestSnapshot_LLMAndActivityCounters(t *testing.T) {
 	s := New()
+	s.RegisterLLMProviders([]string{"Gemini"})
 	s.RecordQuestionAnswered(1, "alice")
 	s.RecordSwearingReaction()
 	s.RecordSwearingReaction()
 	s.RecordPromotionShown()
 
 	s.IncConcurrency()
-	s.ObserveRequest("Gemini", true, time.Millisecond)
-	s.ObserveRequest("Gemini", false, time.Millisecond)
+	s.ObserveRequest("Gemini", true, true, time.Millisecond)
+	s.ObserveRequest("Gemini", false, true, time.Millisecond)
 	s.ObserveFallback()
 	s.DecConcurrency()
 
@@ -148,6 +149,72 @@ func TestSnapshot_LLMAndActivityCounters(t *testing.T) {
 	if snap.RateLimitRejectionsConcurrency != 1 {
 		t.Errorf("RateLimitRejectionsConcurrency = %d, want 1", snap.RateLimitRejectionsConcurrency)
 	}
+	if len(snap.LLMProviders) != 1 {
+		t.Fatalf("LLMProviders = %+v, want 1 entry", snap.LLMProviders)
+	}
+	if got := snap.LLMProviders[0]; got.Provider != "Gemini" || got.SuccessPrimary != 1 || got.FailPrimary != 1 {
+		t.Errorf("LLMProviders[0] = %+v, want Gemini with 1 success and 1 fail, both primary", got)
+	}
+}
+
+func TestSnapshot_LLMProvidersBreaksDownByProviderAndAttempt(t *testing.T) {
+	s := New()
+	s.RegisterLLMProviders([]string{"gemini-primary", "gemini-other", "hf"})
+	s.ObserveRequest("gemini-primary", true, true, time.Millisecond)
+	s.ObserveRequest("gemini-primary", true, true, time.Millisecond)
+	s.ObserveRequest("gemini-other", false, true, time.Millisecond)
+	s.ObserveRequest("gemini-other", true, false, time.Millisecond)
+	s.ObserveRequest("hf", false, false, time.Millisecond)
+
+	snap := s.Snapshot(10)
+	if len(snap.LLMProviders) != 3 {
+		t.Fatalf("LLMProviders = %+v, want 3 entries", snap.LLMProviders)
+	}
+
+	// Sorted by name: gemini-other, gemini-primary, hf.
+	other, primary, hf := snap.LLMProviders[0], snap.LLMProviders[1], snap.LLMProviders[2]
+	if other.Provider != "gemini-other" || other.FailPrimary != 1 || other.SuccessFallback != 1 || other.Total() != 2 {
+		t.Errorf("gemini-other = %+v, want FailPrimary:1 SuccessFallback:1 Total:2", other)
+	}
+	if primary.Provider != "gemini-primary" || primary.SuccessPrimary != 2 || primary.Total() != 2 {
+		t.Errorf("gemini-primary = %+v, want SuccessPrimary:2 Total:2", primary)
+	}
+	if hf.Provider != "hf" || hf.FailFallback != 1 || hf.Total() != 1 {
+		t.Errorf("hf = %+v, want FailFallback:1 Total:1", hf)
+	}
+}
+
+func TestObserveRequest_UnregisteredProviderDroppedFromBreakdownButCountsGlobally(t *testing.T) {
+	s := New()
+	// No RegisterLLMProviders call: "ghost" is never registered.
+	s.ObserveRequest("ghost", true, true, time.Millisecond)
+
+	snap := s.Snapshot(10)
+	if len(snap.LLMProviders) != 0 {
+		t.Errorf("LLMProviders = %+v, want no entries for an unregistered provider", snap.LLMProviders)
+	}
+	if snap.LLMRequestsOK != 1 {
+		t.Errorf("LLMRequestsOK = %d, want 1 (the global counter doesn't depend on registration)", snap.LLMRequestsOK)
+	}
+}
+
+func TestRegisterLLMProviders_IsIdempotentAndKeepsExistingCounts(t *testing.T) {
+	s := New()
+	s.RegisterLLMProviders([]string{"gemini"})
+	s.ObserveRequest("gemini", true, true, time.Millisecond)
+
+	// Re-registering (e.g. a second startup-time call) must not reset counts already recorded.
+	s.RegisterLLMProviders([]string{"gemini", "hf"})
+
+	snap := s.Snapshot(10)
+	if len(snap.LLMProviders) != 2 {
+		t.Fatalf("LLMProviders = %+v, want 2 entries", snap.LLMProviders)
+	}
+	for _, p := range snap.LLMProviders {
+		if p.Provider == "gemini" && p.SuccessPrimary != 1 {
+			t.Errorf("gemini SuccessPrimary = %d, want 1 (re-registering must not reset it)", p.SuccessPrimary)
+		}
+	}
 }
 
 func TestNilStats_MethodsAreNoops(t *testing.T) {
@@ -156,7 +223,7 @@ func TestNilStats_MethodsAreNoops(t *testing.T) {
 	s.RecordQuestionAnswered(1, "alice")
 	s.RecordSwearingReaction()
 	s.RecordPromotionShown()
-	s.ObserveRequest("gemini", true, time.Millisecond)
+	s.ObserveRequest("gemini", true, true, time.Millisecond)
 	s.ObserveFallback()
 	s.ObserveRateLimitRejection("per_user")
 	s.IncConcurrency()

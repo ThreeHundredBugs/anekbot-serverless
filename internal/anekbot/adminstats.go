@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -54,12 +55,21 @@ func (h *StatsHandler) Handle(ctx context.Context, sender Sender, update *models
 
 	logging.Debugf("stats handler: replying to %s for admin @%s", text, msg.From.Username)
 
+	statsText := formatStats(h.stats.Snapshot(statsTopUsers))
 	if _, err := sender.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      msg.Chat.ID,
-		Text:        formatStats(h.stats.Snapshot(statsTopUsers)),
+		Text:        statsText,
+		ParseMode:   models.ParseModeHTML,
 		ReplyMarkup: statsKeyboard(),
 	}); err != nil {
 		logging.Warnf("stats handler: send message: %v", err)
+		if _, err := sender.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:      msg.Chat.ID,
+			Text:        statsText,
+			ReplyMarkup: statsKeyboard(),
+		}); err != nil {
+			logging.Warnf("stats handler: send plain-text fallback: %v", err)
+		}
 	}
 }
 
@@ -87,14 +97,36 @@ func (h *StatsHandler) HandleCallback(ctx context.Context, sender Sender, update
 
 	logging.Debugf("stats handler: refreshing stats for admin @%s", cb.From.Username)
 
+	statsText := formatStats(h.stats.Snapshot(statsTopUsers))
 	if _, err := sender.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:      msg.Chat.ID,
 		MessageID:   msg.ID,
-		Text:        formatStats(h.stats.Snapshot(statsTopUsers)),
+		Text:        statsText,
+		ParseMode:   models.ParseModeHTML,
 		ReplyMarkup: statsKeyboard(),
 	}); err != nil {
+		if isMessageNotModified(err) {
+			// Stats haven't changed since the message was last shown; Telegram rejects a
+			// no-op edit outright. Nothing to do: the currently displayed text is already
+			// correct, so falling back to a plain-text re-edit would only replace it with
+			// unformatted text for no reason.
+			logging.Debugf("stats handler: refresh is a no-op, stats unchanged")
+			return
+		}
 		logging.Warnf("stats handler: edit message text: %v", err)
+		if _, err := sender.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      msg.Chat.ID,
+			MessageID:   msg.ID,
+			Text:        statsText,
+			ReplyMarkup: statsKeyboard(),
+		}); err != nil {
+			logging.Warnf("stats handler: edit message text plain-text fallback: %v", err)
+		}
 	}
+}
+
+func isMessageNotModified(err error) bool {
+	return strings.Contains(err.Error(), "message is not modified")
 }
 
 func statsKeyboard() *models.InlineKeyboardMarkup {
@@ -107,27 +139,113 @@ func statsKeyboard() *models.InlineKeyboardMarkup {
 
 func formatStats(snap stats.Snapshot) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Всего анеков: %d\nИИ-анеков: %d\nПользователей: %d\n", snap.TotalAneks, snap.TotalAIAneks, snap.TotalUsers)
 
-	fmt.Fprintf(&b, "\nВопросы к ИИ: %d\nРеакции на мат: %d\nПромо показано: %d\n",
-		snap.QuestionsAnswered, snap.SwearingReactions, snap.PromotionsShown)
+	b.WriteString(renderTable(
+		[]string{"Метрика", "Значение"},
+		[][]string{
+			{"Всего пользователей", fmt.Sprint(snap.TotalUsers)},
+			{"Анеков всего", fmt.Sprint(snap.TotalAneks)},
+			{"из них ИИ", fmt.Sprint(snap.TotalAIAneks)},
+			{"из них классических", fmt.Sprint(snap.TotalAneks - snap.TotalAIAneks)},
+			{"Вопросов к ИИ", fmt.Sprint(snap.QuestionsAnswered)},
+			{"Реакций на мат", fmt.Sprint(snap.SwearingReactions)},
+			{"Промо показано", fmt.Sprint(snap.PromotionsShown)},
+			{"Запросов к ИИ: OK", fmt.Sprint(snap.LLMRequestsOK)},
+			{"Запросов к ИИ: ошибка", fmt.Sprint(snap.LLMRequestsError)},
+			{"Fallback сработал", fmt.Sprint(snap.LLMFallbacks)},
+			{"Выполняется сейчас", fmt.Sprint(snap.LLMConcurrencyInUse)},
+			{"Отказано: лимит юзера", fmt.Sprint(snap.RateLimitRejectionsPerUser)},
+			{"Отказано: лимит параллелизма", fmt.Sprint(snap.RateLimitRejectionsConcurrency)},
+		},
+	))
+	b.WriteString("\n\n")
+	b.WriteString(formatLLMProviderTable(snap.LLMProviders))
+	b.WriteString("\n\n")
+	b.WriteString(formatTopUsers(snap.TopUsers))
 
-	fmt.Fprintf(&b, "\nЗапросы к ИИ: %d успешно, %d с ошибкой\nFallback-провайдер сработал: %d раз\nСейчас выполняется: %d\nОтказано по лимиту: %d на пользователя, %d по параллелизму\n",
-		snap.LLMRequestsOK, snap.LLMRequestsError, snap.LLMFallbacks, snap.LLMConcurrencyInUse,
-		snap.RateLimitRejectionsPerUser, snap.RateLimitRejectionsConcurrency)
+	return b.String()
+}
 
-	if len(snap.TopUsers) == 0 {
-		b.WriteString("\nТоп пользователей: пока нет данных.")
-		return b.String()
+func formatLLMProviderTable(providers []stats.LLMProviderStats) string {
+	rows := make([][]string, 0, len(providers)+1)
+	var successTotal, failTotal, grandTotal int64
+	for _, p := range providers {
+		rows = append(rows, []string{
+			p.Provider,
+			fmt.Sprint(p.SuccessPrimary),
+			fmt.Sprint(p.SuccessFallback),
+			fmt.Sprint(p.FailPrimary),
+			fmt.Sprint(p.FailFallback),
+			fmt.Sprint(p.Total()),
+		})
+		successTotal += p.SuccessPrimary + p.SuccessFallback
+		failTotal += p.FailPrimary + p.FailFallback
+		grandTotal += p.Total()
+	}
+	rows = append(rows, []string{"Итого", fmt.Sprint(successTotal), "-", fmt.Sprint(failTotal), "-", fmt.Sprint(grandTotal)})
+
+	return renderTable([]string{"Провайдер", "OK(прям.)", "OK(fallback)", "Fail(прям.)", "Fail(fallback)", "Всего"}, rows)
+}
+
+func formatTopUsers(top []stats.UserTotal) string {
+	if len(top) == 0 {
+		return "Топ пользователей: пока нет данных."
 	}
 
-	b.WriteString("\nТоп пользователей:")
-	for i, u := range snap.TopUsers {
+	var b strings.Builder
+	b.WriteString("Топ пользователей:")
+	for i, u := range top {
 		name := "id:" + fmt.Sprint(u.UserID)
 		if u.Username != "" {
-			name = "@" + u.Username
+			name = "@" + escapeHTML(u.Username)
 		}
 		fmt.Fprintf(&b, "\n%d. %s — %d", i+1, name, u.Count)
 	}
 	return b.String()
+}
+
+// renderTable renders header and rows as a fixed-width, space-aligned table inside an HTML
+// <pre> block, which Telegram shows in a monospace font so the columns actually line up.
+// Column widths are computed from the unescaped cell text so escaping (which only ever makes
+// text longer) can't throw off alignment.
+func renderTable(header []string, rows [][]string) string {
+	widths := make([]int, len(header))
+	for i, h := range header {
+		widths[i] = utf8.RuneCountInString(h)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if n := utf8.RuneCountInString(cell); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("<pre>\n")
+	writeRow := func(cells []string) {
+		for i, cell := range cells {
+			if i > 0 {
+				b.WriteString("  ")
+			}
+			pad := widths[i] - utf8.RuneCountInString(cell)
+			b.WriteString(escapeHTML(cell))
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString("\n")
+	}
+	writeRow(header)
+	for _, row := range rows {
+		writeRow(row)
+	}
+	b.WriteString("</pre>")
+	return b.String()
+}
+
+var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// escapeHTML escapes text inserted into a ParseModeHTML message; Telegram still parses
+// entities inside <pre>/<code>, so they aren't exempt either.
+func escapeHTML(text string) string {
+	return htmlEscaper.Replace(text)
 }

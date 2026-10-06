@@ -2,13 +2,27 @@ package anekbot
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
 	"github.com/ThreeHundredBugs/anekbot/internal/stats"
 )
+
+// rowMatches reports whether text has a line with label followed by value, regardless of the
+// exact column padding renderTable uses.
+func rowMatches(t *testing.T, text, label, value string) {
+	t.Helper()
+	pattern := regexp.QuoteMeta(label) + `\s+` + regexp.QuoteMeta(value) + `\b`
+	if !regexp.MustCompile(pattern).MatchString(text) {
+		t.Errorf("text = %q, want a row matching %q", text, pattern)
+	}
+}
 
 func TestStatsHandler_RepliesToAdminInPrivateChat(t *testing.T) {
 	s := stats.New()
@@ -28,9 +42,7 @@ func TestStatsHandler_RepliesToAdminInPrivateChat(t *testing.T) {
 	if len(sender.sentMessages) != 1 {
 		t.Fatalf("expected 1 message sent, got %d", len(sender.sentMessages))
 	}
-	if !strings.Contains(sender.sentMessages[0].Text, "Всего анеков: 1") {
-		t.Errorf("text = %q, want it to include the total", sender.sentMessages[0].Text)
-	}
+	rowMatches(t, sender.sentMessages[0].Text, "Анеков всего", "1")
 }
 
 func TestStatsHandler_IgnoresStart(t *testing.T) {
@@ -114,11 +126,38 @@ func TestStatsHandler_HandleCallback_RefreshesInPlace(t *testing.T) {
 	if edited.ChatID != int64(42) || edited.MessageID != 100 {
 		t.Errorf("chat id / message id = %v / %v, want 42 / 100", edited.ChatID, edited.MessageID)
 	}
-	if !strings.Contains(edited.Text, "Всего анеков: 1") {
-		t.Errorf("text = %q, want refreshed total", edited.Text)
-	}
+	rowMatches(t, edited.Text, "Анеков всего", "1")
 	if _, ok := edited.ReplyMarkup.(*models.InlineKeyboardMarkup); !ok {
 		t.Errorf("reply markup type = %T, want the refresh button kept", edited.ReplyMarkup)
+	}
+}
+
+func TestStatsHandler_HandleCallback_NoopWhenStatsUnchanged(t *testing.T) {
+	s := stats.New()
+	h := NewStatsHandler(s, []string{"admin"})
+	sender := &fakeSender{
+		failEditMessageTextIf: func(p *bot.EditMessageTextParams) bool {
+			return p.ParseMode == models.ParseModeHTML
+		},
+		failEditMessageTextErr: errors.New("bad request, message is not modified"),
+	}
+
+	update := &models.Update{CallbackQuery: &models.CallbackQuery{
+		ID:   "cb-1",
+		Data: statsRefreshCallbackData,
+		From: models.User{ID: 42, Username: "admin"},
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{ID: 100, Chat: models.Chat{ID: 42, Type: models.ChatTypePrivate}},
+		},
+	}}
+
+	h.HandleCallback(context.Background(), sender, update)
+
+	if len(sender.callbackAnswers) != 1 {
+		t.Fatalf("expected the callback to still be answered, got %d", len(sender.callbackAnswers))
+	}
+	if len(sender.editedMessages) != 0 {
+		t.Errorf("expected no plain-text fallback edit when stats are unchanged, got %d", len(sender.editedMessages))
 	}
 }
 
@@ -276,13 +315,38 @@ func TestFormatStats_IncludesActivityAndLLMCounters(t *testing.T) {
 		RateLimitRejectionsPerUser:     1008,
 		RateLimitRejectionsConcurrency: 1109,
 	})
-	for _, want := range []string{
-		"Вопросы к ИИ: 301", "Реакции на мат: 402", "Промо показано: 503",
-		"604 успешно, 705 с ошибкой", "Fallback-провайдер сработал: 806",
-		"Сейчас выполняется: 907", "Отказано по лимиту: 1008 на пользователя, 1109 по параллелизму",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("text = %q, want it to contain %q", text, want)
-		}
+	rowMatches(t, text, "Вопросов к ИИ", "301")
+	rowMatches(t, text, "Реакций на мат", "402")
+	rowMatches(t, text, "Промо показано", "503")
+	rowMatches(t, text, "Запросов к ИИ: OK", "604")
+	rowMatches(t, text, "Запросов к ИИ: ошибка", "705")
+	rowMatches(t, text, "Fallback сработал", "806")
+	rowMatches(t, text, "Выполняется сейчас", "907")
+	rowMatches(t, text, "Отказано: лимит юзера", "1008")
+	rowMatches(t, text, "Отказано: лимит параллелизма", "1109")
+}
+
+func TestFormatStats_LLMProviderTableWithTotalsRow(t *testing.T) {
+	text := formatStats(stats.Snapshot{
+		LLMProviders: []stats.LLMProviderStats{
+			{Provider: "gemini-primary", SuccessPrimary: 8, SuccessFallback: 1, FailPrimary: 2, FailFallback: 0},
+			{Provider: "huggingface-primary", SuccessPrimary: 0, SuccessFallback: 3, FailPrimary: 0, FailFallback: 1},
+		},
+	})
+
+	providerRowMatches(t, text, "gemini-primary", 8, 1, 2, 0, 11)
+	providerRowMatches(t, text, "huggingface-primary", 0, 3, 0, 1, 4)
+	// Total row: combined success (8+1+0+3=12), combined fail (2+0+0+1=3), grand total (15).
+	if !regexp.MustCompile(`Итого\s+12\s+-\s+3\s+-\s+15\b`).MatchString(text) {
+		t.Errorf("text = %q, want a totals row matching Итого 12 - 3 - 15", text)
+	}
+}
+
+func providerRowMatches(t *testing.T, text, provider string, successPrimary, successFallback, failPrimary, failFallback, total int64) {
+	t.Helper()
+	pattern := regexp.QuoteMeta(provider) + fmt.Sprintf(`\s+%d\s+%d\s+%d\s+%d\s+%d\b`,
+		successPrimary, successFallback, failPrimary, failFallback, total)
+	if !regexp.MustCompile(pattern).MatchString(text) {
+		t.Errorf("text = %q, want a row matching %q", text, pattern)
 	}
 }

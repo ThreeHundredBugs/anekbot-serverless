@@ -24,6 +24,10 @@ func (f *fakeLLMProvider) Name() string {
 	return f.name
 }
 
+func (f *fakeLLMProvider) Weight() int {
+	return 1
+}
+
 func (f *fakeLLMProvider) Ask(_ context.Context, _, _ string) (string, error) {
 	f.calls++
 	if f.err != nil {

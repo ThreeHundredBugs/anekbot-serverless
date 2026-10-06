@@ -10,6 +10,10 @@ const (
 	Order Algorithm = iota
 	RoundRobin
 	Random
+
+	// MaxRoundRobinWeight caps the sum of provider weights under round_robin, since that
+	// algorithm materializes a cycle slice sized to the total weight.
+	MaxRoundRobinWeight = 1000
 )
 
 func (a Algorithm) String() string {
