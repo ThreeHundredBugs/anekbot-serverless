@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	maxOutputTokens  = 1024
+	maxOutputTokens  = 2048
 	maxResponseBytes = 1 << 20
 
 	defaultMaxConcurrent = 16

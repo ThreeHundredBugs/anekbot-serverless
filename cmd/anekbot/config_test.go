@@ -182,6 +182,21 @@ func TestLoadConfig_LLMProviderAPIKeyInFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_LLMProviderGeminiThinkingBudget(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
+		{"type": "gemini", "api_key": "key-from-file", "gemini": {"thinking_budget": 0}}
+	]}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.llmProviders) != 1 {
+		t.Fatalf("providers = %d, want 1", len(cfg.llmProviders))
+	}
+}
+
 func TestLoadConfig_LLMProviderAPIKeyWinsOverEnv(t *testing.T) {
 	clearEnv(t)
 	// api_key_env points at an unset var; if it were used instead of api_key, the provider

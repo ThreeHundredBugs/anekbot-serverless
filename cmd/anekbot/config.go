@@ -106,6 +106,12 @@ type providerConfig struct {
 	APIKeyEnv string `json:"api_key_env"`
 	// APIKey sets the key directly in the config file, taking precedence over APIKeyEnv.
 	APIKey string `json:"api_key"`
+	// Gemini holds settings specific to Type == "gemini"; nil for any other type.
+	Gemini *geminiProviderConfig `json:"gemini"`
+}
+
+type geminiProviderConfig struct {
+	ThinkingBudget *int `json:"thinking_budget"`
 }
 
 type rateLimitConfig struct {
@@ -151,7 +157,11 @@ func buildProvider(pc providerConfig) (llm.Provider, error) {
 		}
 	}
 	if pc.Type == "gemini" {
-		return llm.NewGeminiProvider(key, pc.Model), nil
+		var thinkingBudget *int
+		if pc.Gemini != nil {
+			thinkingBudget = pc.Gemini.ThinkingBudget
+		}
+		return llm.NewGeminiProvider(key, pc.Model, thinkingBudget), nil
 	}
 	return llm.NewHuggingFaceProvider(key, pc.Model), nil
 }

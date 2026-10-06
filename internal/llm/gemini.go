@@ -16,6 +16,8 @@ const (
 	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 	defaultGeminiModel   = "gemini-3.6-flash"
 	geminiRequestTimeout = 30 * time.Second
+
+	defaultGeminiThinkingBudget = 512
 )
 
 type geminiPart struct {
@@ -32,6 +34,9 @@ type geminiRequest struct {
 	Contents          []geminiContent `json:"contents"`
 	GenerationConfig  struct {
 		MaxOutputTokens int `json:"maxOutputTokens"`
+		ThinkingConfig  struct {
+			ThinkingBudget int `json:"thinkingBudget"`
+		} `json:"thinkingConfig"`
 	} `json:"generationConfig"`
 }
 
@@ -45,21 +50,27 @@ type geminiResponse struct {
 }
 
 type geminiProvider struct {
-	client  *http.Client
-	baseURL string
-	apiKey  string
-	model   string
+	client         *http.Client
+	baseURL        string
+	apiKey         string
+	model          string
+	thinkingBudget int
 }
 
-func NewGeminiProvider(apiKey, model string) *geminiProvider {
+func NewGeminiProvider(apiKey, model string, thinkingBudget *int) *geminiProvider {
 	if model == "" {
 		model = defaultGeminiModel
 	}
+	budget := defaultGeminiThinkingBudget
+	if thinkingBudget != nil {
+		budget = *thinkingBudget
+	}
 	return &geminiProvider{
-		client:  &http.Client{Timeout: geminiRequestTimeout},
-		baseURL: defaultGeminiBaseURL,
-		apiKey:  apiKey,
-		model:   model,
+		client:         &http.Client{Timeout: geminiRequestTimeout},
+		baseURL:        defaultGeminiBaseURL,
+		apiKey:         apiKey,
+		model:          model,
+		thinkingBudget: budget,
 	}
 }
 
@@ -75,6 +86,7 @@ func (p *geminiProvider) Ask(ctx context.Context, systemPrompt, question string)
 		},
 	}
 	reqBody.GenerationConfig.MaxOutputTokens = maxOutputTokens
+	reqBody.GenerationConfig.ThinkingConfig.ThinkingBudget = p.thinkingBudget
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
