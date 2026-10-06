@@ -23,7 +23,12 @@ func (f *fakeProvider) Name() string {
 	return f.name
 }
 
+// Weight defaults to 1 like a real provider's config-resolved weight does, so tests that don't
+// care about weighting can omit the field instead of setting it on every literal.
 func (f *fakeProvider) Weight() int {
+	if f.weight <= 0 {
+		return 1
+	}
 	return f.weight
 }
 
@@ -86,7 +91,7 @@ func TestAskTreatsEmptyAnswerAsFailureAndFallsBack(t *testing.T) {
 }
 
 func TestParseAlgorithm(t *testing.T) {
-	cases := map[string]Algorithm{"": Order, "order": Order, "round_robin": RoundRobin, "random": Random}
+	cases := map[string]Algorithm{"": RoundRobin, "order": Order, "round_robin": RoundRobin, "random": Random}
 	for input, want := range cases {
 		got, err := ParseAlgorithm(input)
 		if err != nil || got != want {
@@ -101,7 +106,8 @@ func TestParseAlgorithm(t *testing.T) {
 func TestAskOrderAlgorithmMatchesTodaysFixedOrder(t *testing.T) {
 	a := &fakeProvider{name: "A", answer: "a"}
 	b := &fakeProvider{name: "B", answer: "b"}
-	l := New("prompt", Limits{}, a, b) // no SetAlgorithm call: Order is the zero value
+	l := New("prompt", Limits{}, a, b)
+	l.SetAlgorithm(Order) // RoundRobin is the zero value now; Order must be requested explicitly
 
 	for i := 0; i < 3; i++ {
 		if answer, err := l.Ask(context.Background(), "q"); err != nil || answer != "a" {

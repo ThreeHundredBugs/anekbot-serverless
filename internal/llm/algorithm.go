@@ -5,10 +5,13 @@ import "fmt"
 type Algorithm int
 
 const (
-	// Order is the zero value: try providers in config order, first success wins. This is
-	// the default so a config that omits load_balancing keeps today's exact behavior.
-	Order Algorithm = iota
-	RoundRobin
+	// RoundRobin is the Algorithm zero value: it's what an LLM built via New gets if
+	// SetAlgorithm is never called, and what ParseAlgorithm returns for an omitted config
+	// value — both defaults agree.
+	RoundRobin Algorithm = iota
+	// Order tries providers in config order, first success wins; write "order" explicitly
+	// in config to opt into it instead of the RoundRobin default.
+	Order
 	Random
 
 	// MaxRoundRobinWeight caps the sum of provider weights under round_robin, since that
@@ -31,7 +34,9 @@ func (a Algorithm) String() string {
 
 func ParseAlgorithm(s string) (Algorithm, error) {
 	switch s {
-	case "", "order":
+	case "":
+		return RoundRobin, nil
+	case "order":
 		return Order, nil
 	case "round_robin":
 		return RoundRobin, nil

@@ -25,8 +25,13 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
   `Provider` interface (`Name`, `Weight`, `Ask` — every provider carries its own weight);
   `internal/anekbot/llm.go` wraps them with per-user/global rate limiting
   (`internal/flowcontrol/`). `LLM.Ask` tries providers in an order built fresh per request by
-  `Algorithm` (`Order` default/fixed-list, `RoundRobin`, `Random`; see `algorithm.go`). Name
-  and weight are plain constructor args on each provider (`NewGeminiProvider`/
+  `Algorithm` (`RoundRobin`, `Order` fixed-list, `Random`; see `algorithm.go`). `RoundRobin` is
+  the `Algorithm` zero value — both what `New` gets if `SetAlgorithm` is never called, and
+  `ParseAlgorithm`'s default for an omitted/empty config value; write `"order"` explicitly to
+  opt into the old fixed-list behavior. `cmd/anekbot/config.go` is the only place a weight of
+  0/unset gets defaulted to 1 (production providers always reach `llm.go` with a real weight);
+  `fakeProvider` in `llm_test.go` mirrors that same defaulting so tests can omit the field.
+  Name and weight are plain constructor args on each provider (`NewGeminiProvider`/
   `NewHuggingFaceProvider`), set once at construction. `cmd/anekbot/config.go`'s
   `providerConfig` picks the backend by which of `gemini`/`huggingface` is set (not a `type`
   string), and every entry needs a unique `name`.

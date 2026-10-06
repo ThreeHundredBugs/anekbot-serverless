@@ -89,7 +89,7 @@ type LLM struct {
 	recorder     Recorder
 
 	algorithm Algorithm
-	cycle     []int // weighted round-robin cycle; built by SetAlgorithm(RoundRobin)
+	cycle     []int // weighted round-robin cycle; built once at construction
 	cursor    atomic.Uint64
 	randFloat func() float64
 
@@ -102,6 +102,7 @@ func New(systemPrompt string, limits Limits, providers ...Provider) *LLM {
 	return &LLM{
 		systemPrompt: systemPrompt,
 		providers:    providers,
+		cycle:        buildCycle(providers),
 		recorder:     noopRecorder{},
 		randFloat:    rand.Float64,
 		concurrency:  flowcontrol.NewSemaphore(limits.MaxConcurrent),
@@ -121,14 +122,11 @@ func (l *LLM) SetRecorder(r Recorder) {
 	l.recorder = r
 }
 
-// SetAlgorithm picks how Ask orders provider attempts; the zero value (Order) is today's
-// fixed config-order fallback. Like SetRecorder, this is one-time startup wiring and must
-// not be called concurrently with Ask.
+// SetAlgorithm picks how Ask orders provider attempts; the zero value (RoundRobin) is this
+// package's default. Like SetRecorder, this is one-time startup wiring and must not be called
+// concurrently with Ask.
 func (l *LLM) SetAlgorithm(algo Algorithm) {
 	l.algorithm = algo
-	if algo == RoundRobin {
-		l.cycle = buildCycle(l.providers)
-	}
 }
 
 func buildCycle(providers []Provider) []int {

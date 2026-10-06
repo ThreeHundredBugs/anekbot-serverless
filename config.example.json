@@ -44,7 +44,7 @@
       }
     ],
     "load_balancing": {
-      "algorithm": "order"
+      "algorithm": "round_robin"
     },
     "rate_limit": {
       "max_concurrent": 16,
