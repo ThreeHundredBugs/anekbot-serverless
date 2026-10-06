@@ -8,27 +8,35 @@ import (
 	"path/filepath"
 )
 
-// persistedState is the subset of Stats saved to disk across restarts: the running totals and
-// per-user leaderboard behind Snapshot. Point-in-time gauges (LLM concurrency, tracked users)
-// and the fine-grained Prometheus label breakdowns (source/kind, provider/status) aren't
+// persistedState is the subset of Stats saved to disk across restarts: the running totals,
+// per-user leaderboard, and per-LLM-provider breakdown behind Snapshot. Point-in-time gauges
+// (LLM concurrency, tracked users) and the source/kind Prometheus label breakdown aren't
 // persisted — they either reset naturally on restart or aren't meaningful to restore.
 type persistedState struct {
-	TotalAneksClassic    int64                    `json:"total_aneks_classic"`
-	TotalAneksAI         int64                    `json:"total_aneks_ai"`
-	LLMRequestsOK        int64                    `json:"llm_requests_ok"`
-	LLMRequestsError     int64                    `json:"llm_requests_error"`
-	RateLimitPerUser     int64                    `json:"rate_limit_per_user"`
-	RateLimitConcurrency int64                    `json:"rate_limit_concurrency"`
-	LLMFallbackTotal     uint64                   `json:"llm_fallback_total"`
-	SwearingReactions    uint64                   `json:"swearing_reactions"`
-	PromotionsShown      uint64                   `json:"promotions_shown"`
-	QuestionsAnswered    uint64                   `json:"questions_answered"`
-	PerUser              map[UserID]persistedUser `json:"per_user"`
+	TotalAneksClassic    int64                                   `json:"total_aneks_classic"`
+	TotalAneksAI         int64                                   `json:"total_aneks_ai"`
+	LLMRequestsOK        int64                                   `json:"llm_requests_ok"`
+	LLMRequestsError     int64                                   `json:"llm_requests_error"`
+	RateLimitPerUser     int64                                   `json:"rate_limit_per_user"`
+	RateLimitConcurrency int64                                   `json:"rate_limit_concurrency"`
+	LLMFallbackTotal     uint64                                  `json:"llm_fallback_total"`
+	SwearingReactions    uint64                                  `json:"swearing_reactions"`
+	PromotionsShown      uint64                                  `json:"promotions_shown"`
+	QuestionsAnswered    uint64                                  `json:"questions_answered"`
+	PerUser              map[UserID]persistedUser                `json:"per_user"`
+	LLMProviders         map[string]persistedLLMProviderCounters `json:"llm_providers"`
 }
 
 type persistedUser struct {
 	Username string `json:"username"`
 	Count    int64  `json:"count"`
+}
+
+type persistedLLMProviderCounters struct {
+	SuccessPrimary  int64 `json:"success_primary"`
+	SuccessFallback int64 `json:"success_fallback"`
+	FailPrimary     int64 `json:"fail_primary"`
+	FailFallback    int64 `json:"fail_fallback"`
 }
 
 // SaveFile atomically writes s's persistable state to path: it writes to a temp file in the
@@ -69,6 +77,18 @@ func (s *Stats) exportState() persistedState {
 	}
 	s.mu.Unlock()
 
+	// llmProviders' key set is fixed at startup by RegisterLLMProviders, so reading it here
+	// needs no lock, same as ObserveRequest/Snapshot.
+	providers := make(map[string]persistedLLMProviderCounters, len(s.llmProviders))
+	for name, c := range s.llmProviders {
+		providers[name] = persistedLLMProviderCounters{
+			SuccessPrimary:  c.successPrimary.Load(),
+			SuccessFallback: c.successFallback.Load(),
+			FailPrimary:     c.failPrimary.Load(),
+			FailFallback:    c.failFallback.Load(),
+		}
+	}
+
 	return persistedState{
 		TotalAneksClassic:    s.totalAneksClassic.Load(),
 		TotalAneksAI:         s.totalAneksAI.Load(),
@@ -81,6 +101,7 @@ func (s *Stats) exportState() persistedState {
 		PromotionsShown:      s.promotionsShown.Get(),
 		QuestionsAnswered:    s.questionsAnswered.Get(),
 		PerUser:              perUser,
+		LLMProviders:         providers,
 	}
 }
 
@@ -97,7 +118,6 @@ func (s *Stats) importState(state persistedState) {
 	s.questionsAnswered.Set(state.QuestionsAnswered)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for id, pu := range state.PerUser {
 		if len(s.perUser) >= maxTrackedUsers {
 			break
@@ -105,6 +125,18 @@ func (s *Stats) importState(state persistedState) {
 		s.perUser[id] = &userCount{username: pu.Username, count: pu.Count}
 	}
 	s.trackedUsers.Set(float64(len(s.perUser)))
+	s.mu.Unlock()
+
+	// A provider name no longer in s.llmProviders (renamed/removed from config since the
+	// file was saved) is silently dropped, same as ObserveRequest does for an unknown name.
+	for name, pc := range state.LLMProviders {
+		if c := s.llmProviders[name]; c != nil {
+			c.successPrimary.Store(pc.SuccessPrimary)
+			c.successFallback.Store(pc.SuccessFallback)
+			c.failPrimary.Store(pc.FailPrimary)
+			c.failFallback.Store(pc.FailFallback)
+		}
+	}
 }
 
 // atomicWriteFile writes data to path by writing it to a temp file in the same directory and

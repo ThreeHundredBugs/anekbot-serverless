@@ -41,6 +41,9 @@ type Stats struct {
 	// ObserveRequest only ever reads the map and bumps a counter already in it, so no mutex
 	// guards the map itself. The counters are atomics so those bumps are still race-free.
 	llmProviders map[string]*llmProviderCounters
+
+	// startedAt is set once in New and never persisted: uptime resets on every restart.
+	startedAt time.Time
 }
 
 type llmProviderCounters struct {
@@ -63,6 +66,7 @@ func New() *Stats {
 		set:          set,
 		perUser:      make(map[UserID]*userCount),
 		llmProviders: make(map[string]*llmProviderCounters),
+		startedAt:    time.Now(),
 
 		llmFallbackTotal:  set.NewCounter("anekbot_llm_fallback_total"),
 		swearingReactions: set.NewCounter("anekbot_swearing_reactions_total"),
@@ -127,7 +131,8 @@ func (p LLMProviderStats) Total() int64 {
 
 // RegisterLLMProviders pre-allocates a counter for each name, so ObserveRequest never has to
 // mutate llmProviders itself at request time. Call once at startup with every configured
-// provider's name, before the bot starts handling updates; like SetRecorder/SetAlgorithm
+// provider's name, before the bot starts handling updates and before LoadFile (LoadFile only
+// restores a provider's counts if it's already registered); like SetRecorder/SetAlgorithm
 // elsewhere in this codebase, it is not safe to call concurrently with ObserveRequest.
 func (s *Stats) RegisterLLMProviders(names []string) {
 	if s == nil {
@@ -264,6 +269,9 @@ type UserTotal struct {
 }
 
 type Snapshot struct {
+	// Uptime is how long this process has been running; it resets on every restart.
+	Uptime time.Duration
+
 	TotalAneks   int64
 	TotalAIAneks int64
 	// TotalUsers is capped at maxTrackedUsers; see recordUser.
@@ -319,6 +327,8 @@ func (s *Stats) Snapshot(topN int) Snapshot {
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Provider < providers[j].Provider })
 
 	return Snapshot{
+		Uptime: time.Since(s.startedAt),
+
 		TotalAneks:   s.totalAneksClassic.Load() + s.totalAneksAI.Load(),
 		TotalAIAneks: s.totalAneksAI.Load(),
 		TotalUsers:   len(s.perUser),

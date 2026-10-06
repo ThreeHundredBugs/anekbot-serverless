@@ -197,7 +197,7 @@ func TestLoadConfig_LLMProviderGeminiThinkingBudget(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_LoadBalancingDefaultsToOrder(t *testing.T) {
+func TestLoadConfig_LoadBalancingDefaultsToRoundRobin(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
 		{"name": "g", "gemini": {"api_key": "k"}}
@@ -207,8 +207,24 @@ func TestLoadConfig_LoadBalancingDefaultsToOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
+	if cfg.llmAlgorithm != llm.RoundRobin {
+		t.Errorf("algorithm = %v, want %v (omitting load_balancing defaults to round_robin)", cfg.llmAlgorithm, llm.RoundRobin)
+	}
+}
+
+func TestLoadConfig_LoadBalancingExplicitOrderOptsOut(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"name": "g", "gemini": {"api_key": "k"}}],
+		"load_balancing": {"algorithm": "order"}
+	}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
 	if cfg.llmAlgorithm != llm.Order {
-		t.Errorf("algorithm = %v, want %v (omitting load_balancing must keep today's behavior)", cfg.llmAlgorithm, llm.Order)
+		t.Errorf("algorithm = %v, want %v", cfg.llmAlgorithm, llm.Order)
 	}
 }
 
@@ -242,12 +258,13 @@ func TestLoadConfig_LoadBalancingRejectsUnknownAlgorithm(t *testing.T) {
 
 func TestLoadConfig_ProviderWeightIgnoredUnderOrder(t *testing.T) {
 	clearEnv(t)
-	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"name": "g", "weight": 0, "gemini": {"api_key": "k"}}
-	]}}`)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [{"name": "g", "weight": 0, "gemini": {"api_key": "k"}}],
+		"load_balancing": {"algorithm": "order"}
+	}}`)
 
 	if _, err := loadConfig([]string{"-config", path}); err != nil {
-		t.Fatalf("loadConfig: %v (weight should be irrelevant under the default order algorithm)", err)
+		t.Fatalf("loadConfig: %v (weight should be irrelevant under order)", err)
 	}
 }
 

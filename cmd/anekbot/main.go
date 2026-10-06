@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/ThreeHundredBugs/anekbot/internal/llm"
 	"github.com/ThreeHundredBugs/anekbot/internal/logging"
 	"github.com/ThreeHundredBugs/anekbot/internal/stats"
+	"github.com/ThreeHundredBugs/anekbot/internal/version"
 )
 
 const (
@@ -25,6 +27,11 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(versionLine())
+		return
+	}
+
 	cfg, err := loadConfig(os.Args[1:])
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -165,4 +172,8 @@ func runWebhook(ctx context.Context, cfg *config, b *bot.Bot, st *stats.Stats) {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http server shutdown: %v", err)
 	}
+}
+
+func versionLine() string {
+	return fmt.Sprintf("anekbot %s", version.String())
 }

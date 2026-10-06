@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-telegram/bot"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ThreeHundredBugs/anekbot/internal/logging"
 	"github.com/ThreeHundredBugs/anekbot/internal/stats"
+	"github.com/ThreeHundredBugs/anekbot/internal/version"
 )
 
 const (
@@ -141,8 +143,11 @@ func formatStats(snap stats.Snapshot) string {
 	var b strings.Builder
 
 	b.WriteString(renderTable(
-		[]string{"Метрика", "Значение"},
+		nil,
 		[][]string{
+			{"Версия", version.Version},
+			{"Коммит", version.Commit()},
+			{"Аптайм", formatUptime(snap.Uptime)},
 			{"Всего пользователей", fmt.Sprint(snap.TotalUsers)},
 			{"Анеков всего", fmt.Sprint(snap.TotalAneks)},
 			{"из них ИИ", fmt.Sprint(snap.TotalAIAneks)},
@@ -187,6 +192,29 @@ func formatLLMProviderTable(providers []stats.LLMProviderStats) string {
 	return renderTable([]string{"Провайдер", "OK(прям.)", "OK(fallback)", "Fail(прям.)", "Fail(fallback)", "Всего"}, rows)
 }
 
+// formatUptime renders d as the largest two non-zero units, e.g. "3d 2h", "5h 12m", "42s".
+func formatUptime(d time.Duration) string {
+	d = d.Round(time.Second)
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	minutes := d / time.Minute
+	d -= minutes * time.Minute
+	seconds := d / time.Second
+
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	case minutes > 0:
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	default:
+		return fmt.Sprintf("%ds", seconds)
+	}
+}
+
 func formatTopUsers(top []stats.UserTotal) string {
 	if len(top) == 0 {
 		return "Топ пользователей: пока нет данных."
@@ -205,11 +233,16 @@ func formatTopUsers(top []stats.UserTotal) string {
 }
 
 // renderTable renders header and rows as a fixed-width, space-aligned table inside an HTML
-// <pre> block, which Telegram shows in a monospace font so the columns actually line up.
+// <pre> block, which Telegram shows in a monospace font so the columns actually line up. A
+// nil/empty header omits the header row entirely (column widths then come from rows alone).
 // Column widths are computed from the unescaped cell text so escaping (which only ever makes
 // text longer) can't throw off alignment.
 func renderTable(header []string, rows [][]string) string {
-	widths := make([]int, len(header))
+	cols := len(header)
+	if cols == 0 && len(rows) > 0 {
+		cols = len(rows[0])
+	}
+	widths := make([]int, cols)
 	for i, h := range header {
 		widths[i] = utf8.RuneCountInString(h)
 	}
@@ -234,7 +267,9 @@ func renderTable(header []string, rows [][]string) string {
 		}
 		b.WriteString("\n")
 	}
-	writeRow(header)
+	if len(header) > 0 {
+		writeRow(header)
+	}
 	for _, row := range rows {
 		writeRow(row)
 	}

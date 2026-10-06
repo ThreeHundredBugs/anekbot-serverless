@@ -14,7 +14,8 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
 - `cmd/anekbot/` — entrypoint (`main.go`) and config loading (`config.go`). Config is a
   JSON file (see `config.example.json`) layered under env vars layered under flag
   defaults; file values win over env, env wins over hardcoded defaults
-  (`fileEnvDefault`/`or` in `config.go`).
+  (`fileEnvDefault`/`or` in `config.go`). `anekbot version` (checked before config loading,
+  so it needs no config/env at all) prints `internal/version`'s `Version`/`Commit`.
 - `internal/anekbot/` — the bot's own logic: one `Handler` per feature (`AnekHandler`,
   `SwearingHandler`, `QuestionsHandler`, `HelpHandler`, `StatsHandler`), fanned out by
   `Dispatcher.Dispatch` in `dispatcher.go`. A `nil` handler field on `Dispatcher` means
@@ -37,9 +38,16 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
   string), and every entry needs a unique `name`.
 - `internal/stats/` — in-memory counters (`stats.go`, backed by
   `github.com/VictoriaMetrics/metrics` for Prometheus export plus a few `atomic.Int64`
-  fields for the totals `/stats` needs) and file persistence (`persist.go`).
+  fields for the totals `/stats` needs) and file persistence (`persist.go`). `Uptime` in
+  `Snapshot` is time since `New` (process start), deliberately not persisted/restored.
 - `internal/logging/` — leveled logging (trace/debug/warn/…), configured once at startup
   from `LOG_LEVEL`/`bot.log_level`.
+- `internal/version/` — build identity: `Version` (a plain `var`, set via `-ldflags
+  "-X .../version.Version=..."` by `.github/workflows/anekbot-go-release.yaml`'s Build step
+  using the pushed tag; `"dev"` for any other build, since nothing else sets it) and
+  `Commit()` (read from `runtime/debug.ReadBuildInfo`'s embedded VCS info — automatic with
+  a plain `go build` inside a git checkout, no ldflags needed; returns `"unknown"` for e.g.
+  `go run` or `GOFLAGS=-buildvcs=false`).
 
 ## Build, test, lint
 

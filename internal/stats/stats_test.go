@@ -13,6 +13,15 @@ import (
 // Compile-time check: *Stats must satisfy llm.Recorder for SetRecorder wiring.
 var _ llm.Recorder = (*Stats)(nil)
 
+func TestSnapshot_UptimeTracksTimeSinceNew(t *testing.T) {
+	s := New()
+	time.Sleep(5 * time.Millisecond)
+
+	if got := s.Snapshot(10).Uptime; got < 5*time.Millisecond {
+		t.Errorf("Uptime = %v, want at least 5ms", got)
+	}
+}
+
 func TestRecordAnek_TotalsAndPerUser(t *testing.T) {
 	s := New()
 	s.RecordAnek(1, "alice", "message", "classic")
