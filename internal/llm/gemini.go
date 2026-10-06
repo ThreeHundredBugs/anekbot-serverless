@@ -52,12 +52,14 @@ type geminiResponse struct {
 type geminiProvider struct {
 	client         *http.Client
 	baseURL        string
+	name           string
 	apiKey         string
 	model          string
 	thinkingBudget int
+	weight         int
 }
 
-func NewGeminiProvider(apiKey, model string, thinkingBudget *int) *geminiProvider {
+func NewGeminiProvider(name, apiKey, model string, thinkingBudget *int, weight int) *geminiProvider {
 	if model == "" {
 		model = defaultGeminiModel
 	}
@@ -68,14 +70,20 @@ func NewGeminiProvider(apiKey, model string, thinkingBudget *int) *geminiProvide
 	return &geminiProvider{
 		client:         &http.Client{Timeout: geminiRequestTimeout},
 		baseURL:        defaultGeminiBaseURL,
+		name:           name,
 		apiKey:         apiKey,
 		model:          model,
 		thinkingBudget: budget,
+		weight:         weight,
 	}
 }
 
 func (p *geminiProvider) Name() string {
-	return "Gemini"
+	return p.name
+}
+
+func (p *geminiProvider) Weight() int {
+	return p.weight
 }
 
 func (p *geminiProvider) Ask(ctx context.Context, systemPrompt, question string) (string, error) {

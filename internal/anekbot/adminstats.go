@@ -13,9 +13,8 @@ import (
 )
 
 const (
-	statsCommand      = "/stats"
-	statsStartCommand = "/start"
-	statsTopUsers     = 10
+	statsCommand  = "/stats"
+	statsTopUsers = 10
 
 	statsRefreshButtonText   = "🔄 Обновить"
 	statsRefreshCallbackData = "anekbot_stats_refresh"
@@ -39,7 +38,7 @@ func (h *StatsHandler) Handle(ctx context.Context, sender Sender, update *models
 		return
 	}
 	text := strings.TrimSpace(update.Message.Text)
-	if text != statsCommand && text != statsStartCommand {
+	if text != statsCommand {
 		return
 	}
 	msg := update.Message

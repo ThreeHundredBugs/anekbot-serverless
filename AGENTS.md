@@ -25,8 +25,12 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
   `Provider` interface; `internal/anekbot/llm.go` wraps them with per-user/global rate
   limiting (`internal/flowcontrol/`). `LLM.Ask` tries providers in an order built fresh per
   request by `Algorithm` (`Order` default/fixed-list, `RoundRobin`, `Random`; see
-  `algorithm.go`); `WithWeight` (`weight.go`) attaches an optional per-provider weight used
-  by `RoundRobin`/`Random` without changing the `Provider` interface or `New`'s signature.
+  `algorithm.go`). Name and weight are plain constructor args on each provider
+  (`NewGeminiProvider`/`NewHuggingFaceProvider`), not decorators — `providerWeight`
+  (`weight.go`) falls back to 1 only for a `Provider` that doesn't implement the optional
+  `Weight() int` method at all. `cmd/anekbot/config.go`'s `providerConfig` picks the backend
+  by which of `gemini`/`huggingface` is set (not a `type` string), and every entry needs a
+  unique `name`.
 - `internal/stats/` — in-memory counters (`stats.go`, backed by
   `github.com/VictoriaMetrics/metrics` for Prometheus export plus a few `atomic.Int64`
   fields for the totals `/stats` needs) and file persistence (`persist.go`).

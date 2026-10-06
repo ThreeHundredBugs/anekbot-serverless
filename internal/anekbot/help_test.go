@@ -49,6 +49,23 @@ func TestHelpHandler_TriggerWithBotUsernameSuffix(t *testing.T) {
 	}
 }
 
+func TestHelpHandler_TriggersOnStart(t *testing.T) {
+	h := NewHelpHandler("anekbot", true, true, true)
+	sender := &fakeSender{}
+
+	update := &models.Update{Message: &models.Message{
+		ID:   1,
+		Chat: models.Chat{ID: 1},
+		Text: "/start",
+	}}
+
+	h.Handle(context.Background(), sender, update)
+
+	if len(sender.sentMessages) != 1 {
+		t.Errorf("expected /start to trigger the help text, got %d messages", len(sender.sentMessages))
+	}
+}
+
 func TestHelpHandler_IgnoresUnrelatedCommand(t *testing.T) {
 	h := NewHelpHandler("anekbot", true, true, true)
 	sender := &fakeSender{}

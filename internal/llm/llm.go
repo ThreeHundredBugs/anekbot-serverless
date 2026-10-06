@@ -137,17 +137,17 @@ func buildCycle(providers []Provider) []int {
 	return cycle
 }
 
-func (l *LLM) AskFor(ctx context.Context, userID UserID, question string) (answer, providerName string, err error) {
+func (l *LLM) AskFor(ctx context.Context, userID UserID, question string) (answer string, err error) {
 	if !l.perUser.Allow(userID) {
 		logging.Debugf("llm: user %d over quota, rejecting", userID)
 		l.recorder.ObserveRateLimitRejection("per_user")
-		return "", "", ErrBusy
+		return "", ErrBusy
 	}
 	release, ok := l.concurrency.TryAcquire()
 	if !ok {
 		logging.Warnf("llm: at max concurrency, rejecting request for user %d", userID)
 		l.recorder.ObserveRateLimitRejection("concurrency")
-		return "", "", ErrBusy
+		return "", ErrBusy
 	}
 	defer release()
 
@@ -157,7 +157,7 @@ func (l *LLM) AskFor(ctx context.Context, userID UserID, question string) (answe
 	return l.Ask(ctx, question)
 }
 
-func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName string, err error) {
+func (l *LLM) Ask(ctx context.Context, question string) (answer string, err error) {
 	for attempt, idx := range l.attemptOrder() {
 		provider := l.providers[idx]
 		start := time.Now()
@@ -172,7 +172,7 @@ func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName st
 			if attempt > 0 {
 				l.recorder.ObserveFallback()
 			}
-			return answer, provider.Name(), nil
+			return answer, nil
 		}
 		if attempt == 0 {
 			logging.Warnf("llm: primary provider: %v", err)
@@ -180,7 +180,7 @@ func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName st
 			logging.Warnf("llm: fallback provider %s: %v", provider.Name(), err)
 		}
 	}
-	return "", "", err
+	return "", err
 }
 
 func (l *LLM) attemptOrder() []int {

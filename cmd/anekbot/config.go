@@ -105,21 +105,34 @@ type fileConfig struct {
 }
 
 type providerConfig struct {
-	Type  string `json:"type"`
-	Model string `json:"model"`
-	// APIKeyEnv overrides the default env var for Type.
-	APIKeyEnv string `json:"api_key_env"`
-	// APIKey sets the key directly in the config file, taking precedence over APIKeyEnv.
-	APIKey string `json:"api_key"`
-	// Gemini holds settings specific to Type == "gemini"; nil for any other type.
-	Gemini *geminiProviderConfig `json:"gemini"`
+	// Name identifies this provider in stats/logs; required and must be unique, since
+	// several entries can share the same backend (e.g. two Gemini keys).
+	Name string `json:"name"`
 	// Weight controls selection frequency under llm.load_balancing's round_robin/random;
 	// ignored by order. Omitted means 1; must be >= 1 if given under round_robin or random.
 	Weight *int `json:"weight"`
+	// Exactly one of Gemini or HuggingFace must be set.
+	Gemini      *geminiProviderConfig      `json:"gemini"`
+	HuggingFace *huggingFaceProviderConfig `json:"huggingface"`
+}
+
+// commonProviderConfig is embedded (and so flattened by encoding/json) into each backend-specific
+// config below, since every backend takes a model and resolves its key the same way.
+type commonProviderConfig struct {
+	Model string `json:"model"`
+	// APIKeyEnv overrides the backend's default env var.
+	APIKeyEnv string `json:"api_key_env"`
+	// APIKey sets the key directly in the config file, taking precedence over APIKeyEnv.
+	APIKey string `json:"api_key"`
 }
 
 type geminiProviderConfig struct {
+	commonProviderConfig
 	ThinkingBudget *int `json:"thinking_budget"`
+}
+
+type huggingFaceProviderConfig struct {
+	commonProviderConfig
 }
 
 type rateLimitConfig struct {
@@ -140,46 +153,52 @@ func (c rateLimitConfig) toLimits() llm.Limits {
 	}
 }
 
-var defaultAPIKeyEnv = map[string]string{
-	"gemini":      "GEMINI_API_KEY",
-	"huggingface": "HF_API_KEY",
+const (
+	defaultGeminiAPIKeyEnv      = "GEMINI_API_KEY"
+	defaultHuggingFaceAPIKeyEnv = "HF_API_KEY"
+)
+
+// resolveAPIKey applies api_key > api_key_env > defaultEnv, warning on a likely-unintentional
+// config and on a resolved-but-empty key (the caller treats an empty result as "skip").
+func resolveAPIKey(name string, auth commonProviderConfig, defaultEnv string) string {
+	if auth.APIKey != "" && auth.APIKeyEnv != "" {
+		logging.Warnf("llm provider %s: both api_key and api_key_env are set; using api_key (this may be unintentional)", name)
+	}
+	if auth.APIKey != "" {
+		return auth.APIKey
+	}
+	keyEnv := or(auth.APIKeyEnv, defaultEnv)
+	key := os.Getenv(keyEnv)
+	if key == "" {
+		logging.Warnf("llm provider %s skipped: env var %s is empty", name, keyEnv)
+	}
+	return key
 }
 
 func buildProvider(pc providerConfig) (llm.Provider, error) {
-	defEnv, ok := defaultAPIKeyEnv[pc.Type]
-	if !ok {
-		return nil, fmt.Errorf("llm.providers: unknown type %q: must be %q or %q", pc.Type, "gemini", "huggingface")
-	}
-
-	if pc.APIKey != "" && pc.APIKeyEnv != "" {
-		logging.Warnf("llm provider %s: both api_key and api_key_env are set; using api_key (this may be unintentional)", pc.Type)
-	}
-
-	key := pc.APIKey
-	if key == "" {
-		keyEnv := or(pc.APIKeyEnv, defEnv)
-		key = os.Getenv(keyEnv)
-		if key == "" {
-			logging.Warnf("llm provider %s skipped: env var %s is empty", pc.Type, keyEnv)
-			return nil, nil
-		}
-	}
-	var provider llm.Provider
-	if pc.Type == "gemini" {
-		var thinkingBudget *int
-		if pc.Gemini != nil {
-			thinkingBudget = pc.Gemini.ThinkingBudget
-		}
-		provider = llm.NewGeminiProvider(key, pc.Model, thinkingBudget)
-	} else {
-		provider = llm.NewHuggingFaceProvider(key, pc.Model)
-	}
-
 	weight := 1
 	if pc.Weight != nil {
 		weight = *pc.Weight
 	}
-	return llm.WithWeight(provider, weight), nil
+
+	switch {
+	case pc.Gemini != nil && pc.HuggingFace != nil:
+		return nil, fmt.Errorf("llm.providers[%s]: specify exactly one of gemini or huggingface, not both", pc.Name)
+	case pc.Gemini != nil:
+		key := resolveAPIKey(pc.Name, pc.Gemini.commonProviderConfig, defaultGeminiAPIKeyEnv)
+		if key == "" {
+			return nil, nil
+		}
+		return llm.NewGeminiProvider(pc.Name, key, pc.Gemini.Model, pc.Gemini.ThinkingBudget, weight), nil
+	case pc.HuggingFace != nil:
+		key := resolveAPIKey(pc.Name, pc.HuggingFace.commonProviderConfig, defaultHuggingFaceAPIKeyEnv)
+		if key == "" {
+			return nil, nil
+		}
+		return llm.NewHuggingFaceProvider(pc.Name, key, pc.HuggingFace.Model, weight), nil
+	default:
+		return nil, fmt.Errorf("llm.providers[%s]: specify one of gemini or huggingface", pc.Name)
+	}
 }
 
 func loadFileConfig(path string) (*fileConfig, error) {
@@ -251,10 +270,19 @@ func loadConfig(args []string) (*config, error) {
 	}
 	cfg.llmAlgorithm = algo
 
+	seenProviderNames := make(map[string]bool, len(fc.LLM.Providers))
 	totalWeight := 0
 	for i, pc := range fc.LLM.Providers {
+		if pc.Name == "" {
+			return nil, fmt.Errorf("llm.providers[%d]: name is required", i)
+		}
+		if seenProviderNames[pc.Name] {
+			return nil, fmt.Errorf("llm.providers[%d]: duplicate name %q", i, pc.Name)
+		}
+		seenProviderNames[pc.Name] = true
+
 		if algo != llm.Order && pc.Weight != nil && *pc.Weight < 1 {
-			return nil, fmt.Errorf("llm.providers[%d]: weight must be >= 1 for algorithm %q, got %d", i, algo, *pc.Weight)
+			return nil, fmt.Errorf("llm.providers[%s]: weight must be >= 1 for algorithm %q, got %d", pc.Name, algo, *pc.Weight)
 		}
 		weight := 1
 		if pc.Weight != nil {

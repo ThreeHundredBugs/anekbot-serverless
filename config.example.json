@@ -25,8 +25,23 @@
 
   "llm": {
     "providers": [
-      { "type": "gemini", "model": "gemini-3.6-flash", "api_key_env": "GEMINI_API_KEY", "weight": 3, "gemini": { "thinking_budget": 256 } },
-      { "type": "huggingface", "model": "meta-llama/Llama-3.3-70B-Instruct", "api_key_env": "HF_API_KEY", "weight": 1 }
+      {
+        "name": "gemini-primary",
+        "weight": 3,
+        "gemini": {
+          "model": "gemini-3.6-flash",
+          "api_key_env": "GEMINI_API_KEY",
+          "thinking_budget": 256
+        }
+      },
+      {
+        "name": "huggingface-primary",
+        "weight": 1,
+        "huggingface": {
+          "model": "meta-llama/Llama-3.3-70B-Instruct",
+          "api_key_env": "HF_API_KEY"
+        }
+      }
     ],
     "load_balancing": {
       "algorithm": "order"

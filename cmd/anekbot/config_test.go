@@ -150,9 +150,9 @@ func TestLoadConfig_LLMProviderKeysFromEnv(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "default-gemini-key")
 	t.Setenv("MY_HF_KEY", "custom-hf-key")
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini"},
-		{"type": "huggingface", "api_key_env": "MY_HF_KEY"},
-		{"type": "huggingface", "api_key_env": "UNSET_KEY"}
+		{"name": "gemini-default", "gemini": {}},
+		{"name": "hf-custom", "huggingface": {"api_key_env": "MY_HF_KEY"}},
+		{"name": "hf-unset", "huggingface": {"api_key_env": "UNSET_KEY"}}
 	]}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
@@ -162,15 +162,15 @@ func TestLoadConfig_LLMProviderKeysFromEnv(t *testing.T) {
 	if len(cfg.llmProviders) != 2 {
 		t.Fatalf("providers = %d, want 2 (provider with empty key is skipped)", len(cfg.llmProviders))
 	}
-	if cfg.llmProviders[0].Name() != "Gemini" {
-		t.Errorf("first provider = %q, want Gemini (order must be kept)", cfg.llmProviders[0].Name())
+	if cfg.llmProviders[0].Name() != "gemini-default" {
+		t.Errorf("first provider = %q, want gemini-default (order kept, and Name() reports the configured name)", cfg.llmProviders[0].Name())
 	}
 }
 
 func TestLoadConfig_LLMProviderAPIKeyInFile(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini", "api_key": "key-from-file"}
+		{"name": "g", "gemini": {"api_key": "key-from-file"}}
 	]}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
@@ -185,7 +185,7 @@ func TestLoadConfig_LLMProviderAPIKeyInFile(t *testing.T) {
 func TestLoadConfig_LLMProviderGeminiThinkingBudget(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini", "api_key": "key-from-file", "gemini": {"thinking_budget": 0}}
+		{"name": "g", "gemini": {"api_key": "key-from-file", "thinking_budget": 0}}
 	]}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
@@ -200,7 +200,7 @@ func TestLoadConfig_LLMProviderGeminiThinkingBudget(t *testing.T) {
 func TestLoadConfig_LoadBalancingDefaultsToOrder(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini", "api_key": "k"}
+		{"name": "g", "gemini": {"api_key": "k"}}
 	]}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
@@ -215,7 +215,7 @@ func TestLoadConfig_LoadBalancingDefaultsToOrder(t *testing.T) {
 func TestLoadConfig_LoadBalancingParsesAlgorithm(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
-		"providers": [{"type": "gemini", "api_key": "k"}],
+		"providers": [{"name": "g", "gemini": {"api_key": "k"}}],
 		"load_balancing": {"algorithm": "round_robin"}
 	}}`)
 
@@ -231,7 +231,7 @@ func TestLoadConfig_LoadBalancingParsesAlgorithm(t *testing.T) {
 func TestLoadConfig_LoadBalancingRejectsUnknownAlgorithm(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
-		"providers": [{"type": "gemini", "api_key": "k"}],
+		"providers": [{"name": "g", "gemini": {"api_key": "k"}}],
 		"load_balancing": {"algorithm": "bogus"}
 	}}`)
 
@@ -243,7 +243,7 @@ func TestLoadConfig_LoadBalancingRejectsUnknownAlgorithm(t *testing.T) {
 func TestLoadConfig_ProviderWeightIgnoredUnderOrder(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini", "api_key": "k", "weight": 0}
+		{"name": "g", "weight": 0, "gemini": {"api_key": "k"}}
 	]}}`)
 
 	if _, err := loadConfig([]string{"-config", path}); err != nil {
@@ -254,7 +254,7 @@ func TestLoadConfig_ProviderWeightIgnoredUnderOrder(t *testing.T) {
 func TestLoadConfig_ProviderWeightRejectedBelowOneUnderRoundRobin(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
-		"providers": [{"type": "gemini", "api_key": "k", "weight": 0}],
+		"providers": [{"name": "g", "weight": 0, "gemini": {"api_key": "k"}}],
 		"load_balancing": {"algorithm": "round_robin"}
 	}}`)
 
@@ -266,7 +266,7 @@ func TestLoadConfig_ProviderWeightRejectedBelowOneUnderRoundRobin(t *testing.T) 
 func TestLoadConfig_ProviderWeightRejectedBelowOneUnderRandom(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
-		"providers": [{"type": "gemini", "api_key": "k", "weight": -1}],
+		"providers": [{"name": "g", "weight": -1, "gemini": {"api_key": "k"}}],
 		"load_balancing": {"algorithm": "random"}
 	}}`)
 
@@ -279,8 +279,8 @@ func TestLoadConfig_TotalWeightCapExceededUnderRoundRobin(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
 		"providers": [
-			{"type": "gemini", "api_key": "k", "weight": 600},
-			{"type": "huggingface", "api_key": "k", "weight": 600}
+			{"name": "g", "weight": 600, "gemini": {"api_key": "k"}},
+			{"name": "h", "weight": 600, "huggingface": {"api_key": "k"}}
 		],
 		"load_balancing": {"algorithm": "round_robin"}
 	}}`)
@@ -294,8 +294,8 @@ func TestLoadConfig_TotalWeightCapNotEnforcedUnderRandom(t *testing.T) {
 	clearEnv(t)
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
 		"providers": [
-			{"type": "gemini", "api_key": "k", "weight": 600},
-			{"type": "huggingface", "api_key": "k", "weight": 600}
+			{"name": "g", "weight": 600, "gemini": {"api_key": "k"}},
+			{"name": "h", "weight": 600, "huggingface": {"api_key": "k"}}
 		],
 		"load_balancing": {"algorithm": "random"}
 	}}`)
@@ -310,7 +310,7 @@ func TestLoadConfig_LLMProviderAPIKeyWinsOverEnv(t *testing.T) {
 	// api_key_env points at an unset var; if it were used instead of api_key, the provider
 	// would be skipped for an empty key.
 	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {"providers": [
-		{"type": "gemini", "api_key": "key-from-file", "api_key_env": "UNSET_KEY"}
+		{"name": "g", "gemini": {"api_key": "key-from-file", "api_key_env": "UNSET_KEY"}}
 	]}}`)
 
 	cfg, err := loadConfig([]string{"-config", path})
@@ -365,7 +365,10 @@ func TestLoadConfig_Invalid(t *testing.T) {
 	clearEnv(t)
 	tests := map[string]string{
 		"unknown key":                           `{"bot": {"token": "t", "tokn": "x"}}`,
-		"unknown provider":                      `{"bot": {"token": "t"}, "llm": {"providers": [{"type": "gpt"}]}}`,
+		"provider missing name":                 `{"bot": {"token": "t"}, "llm": {"providers": [{"gemini": {"api_key": "k"}}]}}`,
+		"provider duplicate name":               `{"bot": {"token": "t"}, "llm": {"providers": [{"name": "g", "gemini": {"api_key": "k"}}, {"name": "g", "huggingface": {"api_key": "k"}}]}}`,
+		"provider missing backend":              `{"bot": {"token": "t"}, "llm": {"providers": [{"name": "g"}]}}`,
+		"provider both backends":                `{"bot": {"token": "t"}, "llm": {"providers": [{"name": "g", "gemini": {"api_key": "k"}, "huggingface": {"api_key": "k"}}]}}`,
 		"bad promotions":                        `{"bot": {"token": "t"}, "anek": {"inline": {"promotions": {"frequency": 2}}}}`,
 		"invalid json":                          `{`,
 		"missing bot token":                     `{}`,

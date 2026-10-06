@@ -4,24 +4,13 @@ package llm
 // algorithm materializes a cycle slice sized to the total weight.
 const MaxRoundRobinWeight = 1000
 
-// WithWeight wraps p so round_robin and random pick it with the given weight instead of the
-// default 1. order ignores weight entirely.
-func WithWeight(p Provider, weight int) Provider {
-	return weightedProvider{Provider: p, n: weight}
-}
-
-type weightedProvider struct {
-	Provider
-	n int
-}
-
-func (w weightedProvider) weight() int { return w.n }
-
-type weighter interface{ weight() int }
+// weighter is implemented by providers that carry their own weight (gemini/huggingFace
+// providers, set from config); providers that don't implement it default to weight 1.
+type weighter interface{ Weight() int }
 
 func providerWeight(p Provider) int {
 	if w, ok := p.(weighter); ok {
-		return w.weight()
+		return w.Weight()
 	}
 	return 1
 }

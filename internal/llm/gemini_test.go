@@ -29,7 +29,7 @@ func newTestGeminiProvider(t *testing.T, statusCode int, responseBody string) (p
 	}))
 	t.Cleanup(server.Close)
 
-	p = NewGeminiProvider("test-key", "", nil)
+	p = NewGeminiProvider("test", "test-key", "", nil, 1)
 	p.client = server.Client()
 	p.baseURL = server.URL
 
@@ -96,7 +96,7 @@ func TestGeminiProvider_Ask_CustomModel(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewGeminiProvider("test-key", "custom-model", nil)
+	p := NewGeminiProvider("test", "test-key", "custom-model", nil, 1)
 	p.client = server.Client()
 	p.baseURL = server.URL
 

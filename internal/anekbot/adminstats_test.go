@@ -33,10 +33,8 @@ func TestStatsHandler_RepliesToAdminInPrivateChat(t *testing.T) {
 	}
 }
 
-func TestStatsHandler_RepliesToAdminOnStart(t *testing.T) {
-	s := stats.New()
-	s.RecordAnek(1, "alice", "message", "classic")
-	h := NewStatsHandler(s, []string{"@Admin"})
+func TestStatsHandler_IgnoresStart(t *testing.T) {
+	h := NewStatsHandler(stats.New(), []string{"@Admin"})
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -48,11 +46,8 @@ func TestStatsHandler_RepliesToAdminOnStart(t *testing.T) {
 
 	h.Handle(context.Background(), sender, update)
 
-	if len(sender.sentMessages) != 1 {
-		t.Fatalf("expected 1 message sent, got %d", len(sender.sentMessages))
-	}
-	if !strings.Contains(sender.sentMessages[0].Text, "Всего анеков: 1") {
-		t.Errorf("text = %q, want it to include the total", sender.sentMessages[0].Text)
+	if len(sender.sentMessages) != 0 {
+		t.Errorf("expected /start to be left for the help handler, got %d messages", len(sender.sentMessages))
 	}
 }
 

@@ -327,7 +327,7 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 
 	logging.Debugf("anek handler: generating AI joke for topic %q", topic)
-	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
+	joke, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
 	if err != nil {
 		logging.Warnf("anek handler: generate AI joke: %v", err)
 		h.editInlineMessage(ctx, sender, chosen.InlineMessageID, llmErrorMessage(err), false, false)
