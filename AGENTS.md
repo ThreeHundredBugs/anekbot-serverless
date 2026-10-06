@@ -75,7 +75,9 @@ See `internal/anekbot/anek.go`'s classic inline-result loop for the pattern.
   code can't: a protocol/encoding quirk (e.g. rzhunemogu.ru serving windows-1251), an
   invariant the type system doesn't enforce ("ctx must carry a deadline"), a magic
   number's meaning, or behavior that spans multiple functions and isn't visible from a
-  single glance. When you do keep one, make it one line stating the fact directly.
+  single glance. When you do keep one, make it one line stating the fact directly. This
+  includes sentinel errors (`var ErrFoo = errors.New("...")`): if the message already
+  states the fact, don't add a doc comment above it that just repeats the message.
 - Errors are wrapped with `%w` (`fmt.Errorf("...: %w", err)`) throughout. Inside
   `internal/anekbot`, failures that shouldn't abort a handler are logged via
   `internal/logging` (`logging.Warnf`/`Debugf`) rather than returned; `internal/stats`

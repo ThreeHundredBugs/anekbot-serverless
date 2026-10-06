@@ -63,6 +63,22 @@ func TestAskUsesFirstWorkingProvider(t *testing.T) {
 	}
 }
 
+func TestAskTreatsEmptyAnswerAsFailureAndFallsBack(t *testing.T) {
+	blank := &fakeProvider{name: "Blank", answer: "   "}
+	fallback := &fakeProvider{name: "Fallback", answer: "ok"}
+	l := New("prompt", Limits{}, blank, fallback)
+
+	answer, name, err := l.Ask(context.Background(), "q")
+	if err != nil || answer != "ok" || name != "Fallback" {
+		t.Errorf("got %q, %q, %v; want ok, Fallback, nil", answer, name, err)
+	}
+
+	fallback.answer = ""
+	if _, _, err := l.Ask(context.Background(), "q"); err == nil {
+		t.Error("expected an error when every provider returns a blank answer")
+	}
+}
+
 func TestAskForEnforcesPerUserQuota(t *testing.T) {
 	const perUserLimit = 3
 	l := New("prompt", Limits{PerUserLimit: perUserLimit}, &fakeProvider{answer: "ok"})

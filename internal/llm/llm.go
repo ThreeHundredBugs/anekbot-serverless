@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/ThreeHundredBugs/anekbot/internal/flowcontrol"
@@ -21,6 +22,7 @@ const (
 )
 
 var ErrBusy = errors.New("llm: rate limit or concurrency limit reached")
+var ErrEmptyAnswer = errors.New("llm: provider returned an empty answer")
 
 type UserID int64
 
@@ -131,6 +133,9 @@ func (l *LLM) Ask(ctx context.Context, question string) (answer, providerName st
 	for i, provider := range l.providers {
 		start := time.Now()
 		answer, err = provider.Ask(ctx, l.systemPrompt, question)
+		if err == nil && strings.TrimSpace(answer) == "" {
+			err = ErrEmptyAnswer
+		}
 		l.recorder.ObserveRequest(provider.Name(), err == nil, time.Since(start))
 
 		if err == nil {
