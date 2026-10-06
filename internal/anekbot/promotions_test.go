@@ -87,7 +87,7 @@ func TestPromotions_KeyboardButtons(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_AttachesPromotion(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.1, 0.5))
 	sender := &fakeSender{}
 
@@ -102,7 +102,7 @@ func TestAnekHandler_HandleInline_AttachesPromotion(t *testing.T) {
 }
 
 func TestAnekHandler_HandleChosenInlineResult_AttachesPromotion(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.1, 0.5))
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "joke"}))
@@ -121,7 +121,7 @@ func TestAnekHandler_HandleChosenInlineResult_AttachesPromotion(t *testing.T) {
 // rolled for a promo; only one (if any) is ever actually picked and delivered. The shown-promo
 // counter must reflect deliveries, not offers.
 func TestAnekHandler_HandleInline_PromotionCountedOnlyOnConfirmedPick(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.1, 0.5)) // always attaches a promo
 	st := stats.New()
 	h.SetStats(st)
@@ -164,7 +164,7 @@ func TestAnekHandler_HandleInline_PromotionCountedOnlyOnConfirmedPick(t *testing
 }
 
 func TestAnekHandler_HandleCallback_AcksPromotionButton(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	h.HandleCallback(context.Background(), sender, &models.Update{CallbackQuery: &models.CallbackQuery{ID: "cb", Data: promotionCallbackData}})
