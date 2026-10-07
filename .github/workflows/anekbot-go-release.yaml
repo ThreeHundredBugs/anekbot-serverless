@@ -38,7 +38,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/anekbot ./cmd/anekbot
+          go build -trimpath -ldflags="-s -w -X github.com/ThreeHundredBugs/anekbot/internal/version.Version=${{github.ref_name}}" -o dist/anekbot ./cmd/anekbot
 
       - name: Package
         run: |

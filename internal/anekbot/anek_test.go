@@ -54,6 +54,27 @@ func newTestAnekHandler(t *testing.T, body string, randValue float64) (h *AnekHa
 	return h, lastQuery
 }
 
+func TestAnekHandler_FetchJoke_DiscardsNonCyrillicGarbage(t *testing.T) {
+	injection := `";DECLARE/**/@x/**/CHAR(9);SET/**/@x=0x303a303a35;WAITFOR/**/DELAY/**/@x--`
+	h, _ := newTestAnekHandler(t, `{"content":"`+injection+`"}`, 0.1)
+
+	if _, err := h.fetchJoke(context.Background()); err == nil {
+		t.Error("expected fetchJoke to reject a non-Cyrillic payload")
+	}
+}
+
+func TestAnekHandler_FetchJoke_AcceptsRussianText(t *testing.T) {
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
+
+	joke, err := h.fetchJoke(context.Background())
+	if err != nil {
+		t.Fatalf("fetchJoke: %v", err)
+	}
+	if joke != "анек" {
+		t.Errorf("joke = %q, want %q", joke, "анек")
+	}
+}
+
 func TestAnekHandler_Trigger(t *testing.T) {
 	wantJoke := `Штирлиц вошел в комнату и сказал: "привет"` + "\n" + `всем`
 	fixture := `{"content":"` + wantJoke + `"}`
@@ -88,7 +109,7 @@ func TestAnekHandler_Trigger(t *testing.T) {
 }
 
 func TestAnekHandler_18PlusBranch(t *testing.T) {
-	h, query := newTestAnekHandler(t, `{"content":"joke"}`, 0.9) // above 0.85 -> 18+ joke
+	h, query := newTestAnekHandler(t, `{"content":"анек"}`, 0.9) // above 0.85 -> 18+ joke
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -105,7 +126,7 @@ func TestAnekHandler_18PlusBranch(t *testing.T) {
 }
 
 func TestAnekHandler_CaseInsensitiveSubstring(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -122,7 +143,7 @@ func TestAnekHandler_CaseInsensitiveSubstring(t *testing.T) {
 }
 
 func TestAnekHandler_SlashCommand(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -139,7 +160,7 @@ func TestAnekHandler_SlashCommand(t *testing.T) {
 }
 
 func TestAnekHandler_SlashCommandCaseInsensitiveWithTrailingText(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -156,7 +177,7 @@ func TestAnekHandler_SlashCommandCaseInsensitiveWithTrailingText(t *testing.T) {
 }
 
 func TestAnekHandler_SlashCommandWithBotUsername(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetBotUsername("anekbot")
 	sender := &fakeSender{}
 
@@ -174,7 +195,7 @@ func TestAnekHandler_SlashCommandWithBotUsername(t *testing.T) {
 }
 
 func TestAnekHandler_SlashCommandWrongBotIgnored(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetBotUsername("anekbot")
 	sender := &fakeSender{}
 
@@ -192,7 +213,7 @@ func TestAnekHandler_SlashCommandWrongBotIgnored(t *testing.T) {
 }
 
 func TestAnekHandler_SlashCommandPrefixDoesNotFalselyMatch(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -209,7 +230,7 @@ func TestAnekHandler_SlashCommandPrefixDoesNotFalselyMatch(t *testing.T) {
 }
 
 func TestAnekHandler_NoTrigger(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{Message: &models.Message{
@@ -226,7 +247,7 @@ func TestAnekHandler_NoTrigger(t *testing.T) {
 }
 
 func TestAnekHandler_NoMessage(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	h.Handle(context.Background(), sender, &models.Update{})
@@ -288,7 +309,7 @@ func TestAnekHandler_HandleInline(t *testing.T) {
 // whole inline answer with "Field reply_markup must be of type Object", dropping all 3
 // results. This guards against that regression whenever there's no promo to attach.
 func TestAnekHandler_HandleInline_NoPromoOmitsReplyMarkupField(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.5)) // roll >= frequency -> no promo picked
 	sender := &fakeSender{}
 
@@ -309,7 +330,7 @@ func TestAnekHandler_HandleInline_NoPromoOmitsReplyMarkupField(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_AdminSay_SendsTextVerbatim(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetAdmins(NewAdmins([]string{"@admin"}))
 	sender := &fakeSender{}
 
@@ -345,7 +366,7 @@ func TestAnekHandler_HandleInline_AdminSay_SendsTextVerbatim(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_AdminSay_IgnoredForNonAdmin(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetAdmins(NewAdmins([]string{"admin"}))
 	sender := &fakeSender{}
 
@@ -369,7 +390,7 @@ func TestAnekHandler_HandleInline_AdminSay_IgnoredForNonAdmin(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_AdminSay_EmptyTextFallsThrough(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetAdmins(NewAdmins([]string{"admin"}))
 	sender := &fakeSender{}
 
@@ -391,7 +412,7 @@ func TestAnekHandler_HandleInline_AdminSay_EmptyTextFallsThrough(t *testing.T) {
 
 func TestAnekHandler_HandleChosenInlineResult_AdminSay_NoStatsRecorded(t *testing.T) {
 	s := stats.New()
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetStats(s)
 	sender := &fakeSender{}
 
@@ -432,7 +453,7 @@ func TestParseSayText(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_NoInlineQuery(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	h.HandleInline(context.Background(), sender, &models.Update{})
@@ -443,7 +464,7 @@ func TestAnekHandler_HandleInline_NoInlineQuery(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_WithQuery_ShowsPlaceholder(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{InlineQuery: &models.InlineQuery{ID: "query-1", Query: "  про  котов  "}}
@@ -497,7 +518,7 @@ func TestAnekHandler_HandleInline_WithQuery_ShowsPlaceholder(t *testing.T) {
 }
 
 func TestAnekHandler_HandleChosenInlineResult_GeneratesAndEditsJoke(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "смешной анекдот"}))
 
@@ -531,7 +552,7 @@ func TestAnekHandler_HandleChosenInlineResult_GeneratesAndEditsJoke(t *testing.T
 }
 
 func TestAnekHandler_HandleChosenInlineResult_UnavailableWhenLLMNil(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{ChosenInlineResult: &models.ChosenInlineResult{
@@ -551,7 +572,7 @@ func TestAnekHandler_HandleChosenInlineResult_UnavailableWhenLLMNil(t *testing.T
 }
 
 func TestAnekHandler_HandleChosenInlineResult_UnavailableWhenProviderFails(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{err: errors.New("down")}))
 
@@ -572,7 +593,7 @@ func TestAnekHandler_HandleChosenInlineResult_UnavailableWhenProviderFails(t *te
 }
 
 func TestAnekHandler_HandleChosenInlineResult_NoPromoOnError(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetPromotions(mustParsePromotions(t, testPromotionsJSON, 0.1, 0.5))
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{err: errors.New("down")}))
@@ -594,7 +615,7 @@ func TestAnekHandler_HandleChosenInlineResult_NoPromoOnError(t *testing.T) {
 }
 
 func TestAnekHandler_HandleChosenInlineResult_RateLimitedMessage(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{PerUserLimit: 1}, &fakeLLMProvider{answer: "joke"}))
 
@@ -615,7 +636,7 @@ func TestAnekHandler_HandleChosenInlineResult_RateLimitedMessage(t *testing.T) {
 }
 
 func TestAnekHandler_HandleChosenInlineResult_IgnoresOtherResults(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 	h.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "смешной анекдот"}))
 
@@ -632,7 +653,7 @@ func TestAnekHandler_HandleChosenInlineResult_IgnoresOtherResults(t *testing.T) 
 }
 
 func TestAnekHandler_HandleChosenInlineResult_NoUpdate(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	h.HandleChosenInlineResult(context.Background(), sender, &models.Update{})
@@ -643,7 +664,7 @@ func TestAnekHandler_HandleChosenInlineResult_NoUpdate(t *testing.T) {
 }
 
 func TestAnekHandler_HandleCallback_AcksPendingButton(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{CallbackQuery: &models.CallbackQuery{ID: "cb-1", Data: aiJokePendingCallbackData}}
@@ -656,7 +677,7 @@ func TestAnekHandler_HandleCallback_AcksPendingButton(t *testing.T) {
 }
 
 func TestAnekHandler_HandleCallback_IgnoresUnrelatedCallback(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	update := &models.Update{CallbackQuery: &models.CallbackQuery{ID: "cb-1", Data: "some_other_action"}}
@@ -669,7 +690,7 @@ func TestAnekHandler_HandleCallback_IgnoresUnrelatedCallback(t *testing.T) {
 }
 
 func TestAnekHandler_HandleCallback_NoCallbackQuery(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	sender := &fakeSender{}
 
 	h.HandleCallback(context.Background(), sender, &models.Update{})
@@ -693,7 +714,7 @@ func TestInlineTitle_TruncatesLongJokes(t *testing.T) {
 }
 
 func TestAnekHandler_SetInline_DisabledIgnoresInlineQueries(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetInline(false, true)
 	sender := &fakeSender{}
 
@@ -705,7 +726,7 @@ func TestAnekHandler_SetInline_DisabledIgnoresInlineQueries(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_RetriesFailedFetchThenSucceeds(t *testing.T) {
-	wantJoke := "joke"
+	wantJoke := "анек"
 	fixture := `{"content":"` + wantJoke + `"}`
 	win1251Body, err := charmap.Windows1251.NewEncoder().String(fixture)
 	if err != nil {
@@ -743,7 +764,7 @@ func TestAnekHandler_HandleInline_RetriesFailedFetchThenSucceeds(t *testing.T) {
 }
 
 func TestAnekHandler_HandleInline_ShowsFewerThanThreeWhenSomeFetchesFail(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.client = &http.Client{Timeout: h.client.Timeout, Transport: alwaysFailTransport{}}
 	sender := &fakeSender{}
 
@@ -764,7 +785,7 @@ func (alwaysFailTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func TestAnekHandler_SetInline_AIJokesDisabledFallsBackToRegularJokes(t *testing.T) {
-	h, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	h, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	h.SetInline(true, false)
 	sender := &fakeSender{}
 

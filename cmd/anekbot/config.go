@@ -37,6 +37,7 @@ type config struct {
 	llmProviders    []llm.Provider
 	llmLimits       llm.Limits
 	llmSystemPrompt string
+	llmAlgorithm    llm.Algorithm
 
 	aiJokePromptTemplate string
 
@@ -78,7 +79,11 @@ type fileConfig struct {
 		Providers []providerConfig `json:"providers"`
 		RateLimit rateLimitConfig  `json:"rate_limit"`
 		// SystemPrompt is sent to the LLM for both question-answering and AI joke generation.
-		SystemPrompt string `json:"system_prompt"`
+		SystemPrompt  string `json:"system_prompt"`
+		LoadBalancing struct {
+			// Algorithm is "round_robin" (default), "order" or "random"; see llm.ParseAlgorithm.
+			Algorithm string `json:"algorithm"`
+		} `json:"load_balancing"`
 	} `json:"llm"`
 	Anek struct {
 		Enabled *bool `json:"enabled"`
@@ -100,12 +105,34 @@ type fileConfig struct {
 }
 
 type providerConfig struct {
-	Type  string `json:"type"`
+	// Name identifies this provider in stats/logs; required and must be unique, since
+	// several entries can share the same backend (e.g. two Gemini keys).
+	Name string `json:"name"`
+	// Weight controls selection frequency under llm.load_balancing's round_robin/random;
+	// ignored by order. Omitted means 1; must be >= 1 if given under round_robin or random.
+	Weight *int `json:"weight"`
+	// Exactly one of Gemini or HuggingFace must be set.
+	Gemini      *geminiProviderConfig      `json:"gemini"`
+	HuggingFace *huggingFaceProviderConfig `json:"huggingface"`
+}
+
+// commonProviderConfig is embedded (and so flattened by encoding/json) into each backend-specific
+// config below, since every backend takes a model and resolves its key the same way.
+type commonProviderConfig struct {
 	Model string `json:"model"`
-	// APIKeyEnv overrides the default env var for Type.
+	// APIKeyEnv overrides the backend's default env var.
 	APIKeyEnv string `json:"api_key_env"`
 	// APIKey sets the key directly in the config file, taking precedence over APIKeyEnv.
 	APIKey string `json:"api_key"`
+}
+
+type geminiProviderConfig struct {
+	commonProviderConfig
+	ThinkingBudget *int `json:"thinking_budget"`
+}
+
+type huggingFaceProviderConfig struct {
+	commonProviderConfig
 }
 
 type rateLimitConfig struct {
@@ -126,34 +153,52 @@ func (c rateLimitConfig) toLimits() llm.Limits {
 	}
 }
 
-var defaultAPIKeyEnv = map[string]string{
-	"gemini":      "GEMINI_API_KEY",
-	"huggingface": "HF_API_KEY",
+const (
+	defaultGeminiAPIKeyEnv      = "GEMINI_API_KEY"
+	defaultHuggingFaceAPIKeyEnv = "HF_API_KEY"
+)
+
+// resolveAPIKey applies api_key > api_key_env > defaultEnv, warning on a likely-unintentional
+// config and on a resolved-but-empty key (the caller treats an empty result as "skip").
+func resolveAPIKey(name string, auth commonProviderConfig, defaultEnv string) string {
+	if auth.APIKey != "" && auth.APIKeyEnv != "" {
+		logging.Warnf("llm provider %s: both api_key and api_key_env are set; using api_key (this may be unintentional)", name)
+	}
+	if auth.APIKey != "" {
+		return auth.APIKey
+	}
+	keyEnv := or(auth.APIKeyEnv, defaultEnv)
+	key := os.Getenv(keyEnv)
+	if key == "" {
+		logging.Warnf("llm provider %s skipped: env var %s is empty", name, keyEnv)
+	}
+	return key
 }
 
 func buildProvider(pc providerConfig) (llm.Provider, error) {
-	defEnv, ok := defaultAPIKeyEnv[pc.Type]
-	if !ok {
-		return nil, fmt.Errorf("llm.providers: unknown type %q: must be %q or %q", pc.Type, "gemini", "huggingface")
+	weight := 1
+	if pc.Weight != nil {
+		weight = *pc.Weight
 	}
 
-	if pc.APIKey != "" && pc.APIKeyEnv != "" {
-		logging.Warnf("llm provider %s: both api_key and api_key_env are set; using api_key (this may be unintentional)", pc.Type)
-	}
-
-	key := pc.APIKey
-	if key == "" {
-		keyEnv := or(pc.APIKeyEnv, defEnv)
-		key = os.Getenv(keyEnv)
+	switch {
+	case pc.Gemini != nil && pc.HuggingFace != nil:
+		return nil, fmt.Errorf("llm.providers[%s]: specify exactly one of gemini or huggingface, not both", pc.Name)
+	case pc.Gemini != nil:
+		key := resolveAPIKey(pc.Name, pc.Gemini.commonProviderConfig, defaultGeminiAPIKeyEnv)
 		if key == "" {
-			logging.Warnf("llm provider %s skipped: env var %s is empty", pc.Type, keyEnv)
 			return nil, nil
 		}
+		return llm.NewGeminiProvider(pc.Name, key, pc.Gemini.Model, pc.Gemini.ThinkingBudget, weight), nil
+	case pc.HuggingFace != nil:
+		key := resolveAPIKey(pc.Name, pc.HuggingFace.commonProviderConfig, defaultHuggingFaceAPIKeyEnv)
+		if key == "" {
+			return nil, nil
+		}
+		return llm.NewHuggingFaceProvider(pc.Name, key, pc.HuggingFace.Model, weight), nil
+	default:
+		return nil, fmt.Errorf("llm.providers[%s]: specify one of gemini or huggingface", pc.Name)
 	}
-	if pc.Type == "gemini" {
-		return llm.NewGeminiProvider(key, pc.Model), nil
-	}
-	return llm.NewHuggingFaceProvider(key, pc.Model), nil
 }
 
 func loadFileConfig(path string) (*fileConfig, error) {
@@ -219,14 +264,37 @@ func loadConfig(args []string) (*config, error) {
 		aiJokePromptTemplate: or(fc.Anek.Inline.AIJokePromptTemplate, anekbot.DefaultAIJokePromptTemplate),
 	}
 
-	for _, pc := range fc.LLM.Providers {
+	algo, err := llm.ParseAlgorithm(fc.LLM.LoadBalancing.Algorithm)
+	if err != nil {
+		return nil, fmt.Errorf("llm.load_balancing.algorithm: %w", err)
+	}
+	cfg.llmAlgorithm = algo
+
+	seenProviderNames := make(map[string]bool, len(fc.LLM.Providers))
+	totalWeight := 0
+	for i, pc := range fc.LLM.Providers {
+		if pc.Name == "" {
+			return nil, fmt.Errorf("llm.providers[%d]: name is required", i)
+		}
+		if seenProviderNames[pc.Name] {
+			return nil, fmt.Errorf("llm.providers[%d]: duplicate name %q", i, pc.Name)
+		}
+		seenProviderNames[pc.Name] = true
+
+		if algo != llm.Order && pc.Weight != nil && *pc.Weight < 1 {
+			return nil, fmt.Errorf("llm.providers[%s]: weight must be >= 1 for algorithm %q, got %d", pc.Name, algo, *pc.Weight)
+		}
 		provider, err := buildProvider(pc)
 		if err != nil {
 			return nil, err
 		}
 		if provider != nil {
 			cfg.llmProviders = append(cfg.llmProviders, provider)
+			totalWeight += provider.Weight()
 		}
+	}
+	if algo == llm.RoundRobin && totalWeight > llm.MaxRoundRobinWeight {
+		return nil, fmt.Errorf("llm.providers: total weight %d exceeds max %d for algorithm %q", totalWeight, llm.MaxRoundRobinWeight, algo)
 	}
 
 	if fc.Anek.Inline.Promotions != nil {

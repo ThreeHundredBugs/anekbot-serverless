@@ -59,24 +59,32 @@ type hfResponse struct {
 type huggingFaceProvider struct {
 	client  *http.Client
 	baseURL string
+	name    string
 	apiKey  string
 	model   string
+	weight  int
 }
 
-func NewHuggingFaceProvider(apiKey, model string) *huggingFaceProvider {
+func NewHuggingFaceProvider(name, apiKey, model string, weight int) *huggingFaceProvider {
 	if model == "" {
 		model = defaultHuggingFaceModel
 	}
 	return &huggingFaceProvider{
 		client:  &http.Client{Timeout: huggingFaceRequestTimeout},
 		baseURL: defaultHuggingFaceBaseURL,
+		name:    name,
 		apiKey:  apiKey,
 		model:   model,
+		weight:  weight,
 	}
 }
 
 func (p *huggingFaceProvider) Name() string {
-	return "Hugging Face"
+	return p.name
+}
+
+func (p *huggingFaceProvider) Weight() int {
+	return p.weight
 }
 
 func (p *huggingFaceProvider) Ask(ctx context.Context, systemPrompt, question string) (string, error) {

@@ -23,6 +23,9 @@ type fakeSender struct {
 
 	// failEditMessageTextIf works like failSendMessageIf, but for EditMessageText.
 	failEditMessageTextIf func(*bot.EditMessageTextParams) bool
+	// failEditMessageTextErr overrides the error failEditMessageTextIf causes, so tests can
+	// simulate a specific Telegram API error message rather than a generic failure.
+	failEditMessageTextErr error
 }
 
 func (f *fakeSender) SendMessage(_ context.Context, params *bot.SendMessageParams) (*models.Message, error) {
@@ -53,6 +56,9 @@ func (f *fakeSender) EditMessageText(_ context.Context, params *bot.EditMessageT
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failEditMessageTextIf != nil && f.failEditMessageTextIf(params) {
+		if f.failEditMessageTextErr != nil {
+			return nil, f.failEditMessageTextErr
+		}
 		return nil, errors.New("fakeSender: simulated EditMessageText failure")
 	}
 	f.editedMessages = append(f.editedMessages, params)

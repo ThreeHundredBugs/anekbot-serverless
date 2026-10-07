@@ -36,6 +36,21 @@ type Stats struct {
 
 	mu      sync.Mutex
 	perUser map[UserID]*userCount
+
+	// llmProviders is populated once via RegisterLLMProviders, before any concurrent use;
+	// ObserveRequest only ever reads the map and bumps a counter already in it, so no mutex
+	// guards the map itself. The counters are atomics so those bumps are still race-free.
+	llmProviders map[string]*llmProviderCounters
+
+	// startedAt is set once in New and never persisted: uptime resets on every restart.
+	startedAt time.Time
+}
+
+type llmProviderCounters struct {
+	successPrimary  atomic.Int64
+	successFallback atomic.Int64
+	failPrimary     atomic.Int64
+	failFallback    atomic.Int64
 }
 
 type userCount struct {
@@ -48,8 +63,10 @@ func New() *Stats {
 
 	set := metrics.NewSet()
 	s := &Stats{
-		set:     set,
-		perUser: make(map[UserID]*userCount),
+		set:          set,
+		perUser:      make(map[UserID]*userCount),
+		llmProviders: make(map[string]*llmProviderCounters),
+		startedAt:    time.Now(),
 
 		llmFallbackTotal:  set.NewCounter("anekbot_llm_fallback_total"),
 		swearingReactions: set.NewCounter("anekbot_swearing_reactions_total"),
@@ -98,7 +115,40 @@ func (s *Stats) RecordPromotionShown() {
 	s.promotionsShown.Inc()
 }
 
-func (s *Stats) ObserveRequest(provider string, ok bool, duration time.Duration) {
+// LLMProviderStats breaks down a single provider's requests by outcome and by whether the
+// request was the first (primary) attempt or a fallback from an earlier provider's failure.
+type LLMProviderStats struct {
+	Provider        string
+	SuccessPrimary  int64
+	SuccessFallback int64
+	FailPrimary     int64
+	FailFallback    int64
+}
+
+func (p LLMProviderStats) Total() int64 {
+	return p.SuccessPrimary + p.SuccessFallback + p.FailPrimary + p.FailFallback
+}
+
+// RegisterLLMProviders pre-allocates a counter for each name, so ObserveRequest never has to
+// mutate llmProviders itself at request time. Call once at startup with every configured
+// provider's name, before the bot starts handling updates and before LoadFile (LoadFile only
+// restores a provider's counts if it's already registered); like SetRecorder/SetAlgorithm
+// elsewhere in this codebase, it is not safe to call concurrently with ObserveRequest.
+func (s *Stats) RegisterLLMProviders(names []string) {
+	if s == nil {
+		return
+	}
+	for _, name := range names {
+		if _, ok := s.llmProviders[name]; !ok {
+			s.llmProviders[name] = &llmProviderCounters{}
+		}
+	}
+}
+
+// ObserveRequest records one provider attempt. provider must have been passed to
+// RegisterLLMProviders; an unregistered name is silently dropped from the per-provider
+// breakdown (it still counts toward the global llmRequestsOK/Error totals below).
+func (s *Stats) ObserveRequest(provider string, ok, isPrimary bool, duration time.Duration) {
 	if s == nil {
 		return
 	}
@@ -106,12 +156,31 @@ func (s *Stats) ObserveRequest(provider string, ok bool, duration time.Duration)
 	if ok {
 		status = "ok"
 	}
-	s.set.GetOrCreateCounter(labeled("anekbot_llm_requests_total", "provider", provider, "status", status)).Inc()
+	attempt := "fallback"
+	if isPrimary {
+		attempt = "primary"
+	}
+	s.set.GetOrCreateCounter(labeled("anekbot_llm_requests_total", "provider", provider, "status", status, "attempt", attempt)).Inc()
 	s.set.GetOrCreateHistogram(labeled("anekbot_llm_request_duration_seconds", "provider", provider)).Update(duration.Seconds())
 	if ok {
 		s.llmRequestsOK.Add(1)
 	} else {
 		s.llmRequestsError.Add(1)
+	}
+
+	providerCounters := s.llmProviders[provider]
+	if providerCounters == nil {
+		return
+	}
+	switch {
+	case ok && isPrimary:
+		providerCounters.successPrimary.Add(1)
+	case ok && !isPrimary:
+		providerCounters.successFallback.Add(1)
+	case !ok && isPrimary:
+		providerCounters.failPrimary.Add(1)
+	default:
+		providerCounters.failFallback.Add(1)
 	}
 }
 
@@ -200,6 +269,9 @@ type UserTotal struct {
 }
 
 type Snapshot struct {
+	// Uptime is how long this process has been running; it resets on every restart.
+	Uptime time.Duration
+
 	TotalAneks   int64
 	TotalAIAneks int64
 	// TotalUsers is capped at maxTrackedUsers; see recordUser.
@@ -216,6 +288,8 @@ type Snapshot struct {
 	LLMConcurrencyInUse            int64
 	RateLimitRejectionsPerUser     int64
 	RateLimitRejectionsConcurrency int64
+	// LLMProviders is sorted by Provider name.
+	LLMProviders []LLMProviderStats
 }
 
 // Snapshot returns current totals and the topN users by recorded anek count. s may be nil.
@@ -240,7 +314,21 @@ func (s *Stats) Snapshot(topN int) Snapshot {
 		totals = totals[:topN]
 	}
 
+	providers := make([]LLMProviderStats, 0, len(s.llmProviders))
+	for name, c := range s.llmProviders {
+		providers = append(providers, LLMProviderStats{
+			Provider:        name,
+			SuccessPrimary:  c.successPrimary.Load(),
+			SuccessFallback: c.successFallback.Load(),
+			FailPrimary:     c.failPrimary.Load(),
+			FailFallback:    c.failFallback.Load(),
+		})
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i].Provider < providers[j].Provider })
+
 	return Snapshot{
+		Uptime: time.Since(s.startedAt),
+
 		TotalAneks:   s.totalAneksClassic.Load() + s.totalAneksAI.Load(),
 		TotalAIAneks: s.totalAneksAI.Load(),
 		TotalUsers:   len(s.perUser),
@@ -256,6 +344,7 @@ func (s *Stats) Snapshot(topN int) Snapshot {
 		LLMConcurrencyInUse:            int64(s.llmConcurrencyInUse.Get()),
 		RateLimitRejectionsPerUser:     s.rateLimitPerUser.Load(),
 		RateLimitRejectionsConcurrency: s.rateLimitConcurrency.Load(),
+		LLMProviders:                   providers,
 	}
 }
 

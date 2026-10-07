@@ -2,7 +2,6 @@ package anekbot
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -47,7 +46,7 @@ func (h *QuestionsHandler) Handle(ctx context.Context, sender Sender, update *mo
 	}
 	logging.Debugf("questions handler: answering question in chat_id=%d", msg.Chat.ID)
 
-	answer, providerName, err := h.llm.AskFor(ctx, userID(msg.From), question)
+	answer, err := h.llm.AskFor(ctx, userID(msg.From), question)
 	if err != nil {
 		if _, sendErr := sender.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:          msg.Chat.ID,
@@ -61,8 +60,7 @@ func (h *QuestionsHandler) Handle(ctx context.Context, sender Sender, update *mo
 
 	h.stats.RecordQuestionAnswered(stats.UserID(userID(msg.From)), username(msg.From))
 
-	signature := fmt.Sprintf("\n\nby %s", providerName)
-	answer = truncateToRunes(answer, telegramMessageMaxRunes-len([]rune(signature))) + signature
+	answer = truncateToRunes(answer, telegramMessageMaxRunes)
 
 	_, err = sender.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          msg.Chat.ID,

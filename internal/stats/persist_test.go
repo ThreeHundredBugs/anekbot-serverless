@@ -11,14 +11,15 @@ func TestSaveLoadFile_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stats.json")
 
 	s := New()
+	s.RegisterLLMProviders([]string{"gemini"})
 	s.RecordAnek(1, "alice", "message", "classic")
 	s.RecordAnek(1, "alice", "inline", "ai")
 	s.RecordAnek(2, "bob", "message", "classic")
 	s.RecordQuestionAnswered(1, "alice")
 	s.RecordSwearingReaction()
 	s.RecordPromotionShown()
-	s.ObserveRequest("gemini", true, time.Millisecond)
-	s.ObserveRequest("gemini", false, time.Millisecond)
+	s.ObserveRequest("gemini", true, true, time.Millisecond)
+	s.ObserveRequest("gemini", false, true, time.Millisecond)
 	s.ObserveFallback()
 	s.ObserveRateLimitRejection("concurrency")
 	s.ObserveRateLimitRejection("per_user")
@@ -28,6 +29,7 @@ func TestSaveLoadFile_RoundTrip(t *testing.T) {
 	}
 
 	loaded := New()
+	loaded.RegisterLLMProviders([]string{"gemini"})
 	if err := loaded.LoadFile(path); err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
@@ -62,6 +64,73 @@ func TestSaveLoadFile_RoundTrip(t *testing.T) {
 		if got.TopUsers[i] != want.TopUsers[i] {
 			t.Errorf("TopUsers[%d] = %+v, want %+v", i, got.TopUsers[i], want.TopUsers[i])
 		}
+	}
+	if len(got.LLMProviders) != 1 || got.LLMProviders[0] != want.LLMProviders[0] {
+		t.Errorf("LLMProviders = %+v, want %+v", got.LLMProviders, want.LLMProviders)
+	}
+}
+
+func TestSaveLoadFile_LLMProvidersOnlyRestoredIfRegistered(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+
+	s := New()
+	s.RegisterLLMProviders([]string{"gemini", "retired-provider"})
+	s.ObserveRequest("gemini", true, true, time.Millisecond)
+	s.ObserveRequest("retired-provider", true, true, time.Millisecond)
+	if err := s.SaveFile(path); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+
+	// The new process only registers "gemini": "retired-provider" was removed from config.
+	loaded := New()
+	loaded.RegisterLLMProviders([]string{"gemini"})
+	if err := loaded.LoadFile(path); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	snap := loaded.Snapshot(10)
+	if len(snap.LLMProviders) != 1 || snap.LLMProviders[0].Provider != "gemini" || snap.LLMProviders[0].SuccessPrimary != 1 {
+		t.Errorf("LLMProviders = %+v, want only gemini restored with SuccessPrimary:1", snap.LLMProviders)
+	}
+}
+
+// TestSaveLoadFile_ProviderSetChangedAcrossRestart covers run → stop → reconfigure providers
+// → start: "kept" must restore its old counts, "removed" must vanish without a trace, and
+// "added" must start at zero rather than erroring or inheriting another provider's data.
+func TestSaveLoadFile_ProviderSetChangedAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stats.json")
+
+	s := New()
+	s.RegisterLLMProviders([]string{"kept", "removed"})
+	s.ObserveRequest("kept", true, true, time.Millisecond)
+	s.ObserveRequest("kept", true, true, time.Millisecond)
+	s.ObserveRequest("removed", false, true, time.Millisecond)
+	if err := s.SaveFile(path); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+
+	// Next run's config dropped "removed" and added "added".
+	loaded := New()
+	loaded.RegisterLLMProviders([]string{"kept", "added"})
+	if err := loaded.LoadFile(path); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+
+	byName := map[string]LLMProviderStats{}
+	for _, p := range loaded.Snapshot(10).LLMProviders {
+		byName[p.Provider] = p
+	}
+	if len(byName) != 2 {
+		t.Fatalf("LLMProviders = %+v, want exactly 2 entries (kept, added)", byName)
+	}
+	if got := byName["kept"]; got.SuccessPrimary != 2 {
+		t.Errorf("kept.SuccessPrimary = %d, want 2 (restored from before the restart)", got.SuccessPrimary)
+	}
+	if got := byName["added"]; got.Total() != 0 {
+		t.Errorf("added = %+v, want all zeros (never recorded before this run)", got)
+	}
+	if _, ok := byName["removed"]; ok {
+		t.Error("\"removed\" should not appear at all: it's no longer registered")
 	}
 }
 

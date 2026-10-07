@@ -14,7 +14,8 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
 - `cmd/anekbot/` — entrypoint (`main.go`) and config loading (`config.go`). Config is a
   JSON file (see `config.example.json`) layered under env vars layered under flag
   defaults; file values win over env, env wins over hardcoded defaults
-  (`fileEnvDefault`/`or` in `config.go`).
+  (`fileEnvDefault`/`or` in `config.go`). `anekbot version` (checked before config loading,
+  so it needs no config/env at all) prints `internal/version`'s `Version`/`Commit`.
 - `internal/anekbot/` — the bot's own logic: one `Handler` per feature (`AnekHandler`,
   `SwearingHandler`, `QuestionsHandler`, `HelpHandler`, `StatsHandler`), fanned out by
   `Dispatcher.Dispatch` in `dispatcher.go`. A `nil` handler field on `Dispatcher` means
@@ -22,13 +23,31 @@ optionally exposes Prometheus metrics and an admin-only `/stats` panel.
   Handlers talk to Telegram through the `Sender` interface (`dispatcher.go`), which
   `fake_sender_test.go` implements for tests instead of hitting the real Bot API.
 - `internal/llm/` — LLM provider implementations (Gemini, HuggingFace) behind a common
-  `Provider` interface; `internal/anekbot/llm.go` wraps them with per-user/global rate
-  limiting (`internal/flowcontrol/`) and fallback between providers.
+  `Provider` interface (`Name`, `Weight`, `Ask` — every provider carries its own weight);
+  `internal/anekbot/llm.go` wraps them with per-user/global rate limiting
+  (`internal/flowcontrol/`). `LLM.Ask` tries providers in an order built fresh per request by
+  `Algorithm` (`RoundRobin`, `Order` fixed-list, `Random`; see `algorithm.go`). `RoundRobin` is
+  the `Algorithm` zero value — both what `New` gets if `SetAlgorithm` is never called, and
+  `ParseAlgorithm`'s default for an omitted/empty config value; write `"order"` explicitly to
+  opt into the old fixed-list behavior. `cmd/anekbot/config.go` is the only place a weight of
+  0/unset gets defaulted to 1 (production providers always reach `llm.go` with a real weight);
+  `fakeProvider` in `llm_test.go` mirrors that same defaulting so tests can omit the field.
+  Name and weight are plain constructor args on each provider (`NewGeminiProvider`/
+  `NewHuggingFaceProvider`), set once at construction. `cmd/anekbot/config.go`'s
+  `providerConfig` picks the backend by which of `gemini`/`huggingface` is set (not a `type`
+  string), and every entry needs a unique `name`.
 - `internal/stats/` — in-memory counters (`stats.go`, backed by
   `github.com/VictoriaMetrics/metrics` for Prometheus export plus a few `atomic.Int64`
-  fields for the totals `/stats` needs) and file persistence (`persist.go`).
+  fields for the totals `/stats` needs) and file persistence (`persist.go`). `Uptime` in
+  `Snapshot` is time since `New` (process start), deliberately not persisted/restored.
 - `internal/logging/` — leveled logging (trace/debug/warn/…), configured once at startup
   from `LOG_LEVEL`/`bot.log_level`.
+- `internal/version/` — build identity: `Version` (a plain `var`, set via `-ldflags
+  "-X .../version.Version=..."` by `.github/workflows/anekbot-go-release.yaml`'s Build step
+  using the pushed tag; `"dev"` for any other build, since nothing else sets it) and
+  `Commit()` (read from `runtime/debug.ReadBuildInfo`'s embedded VCS info — automatic with
+  a plain `go build` inside a git checkout, no ldflags needed; returns `"unknown"` for e.g.
+  `go run` or `GOFLAGS=-buildvcs=false`).
 
 ## Build, test, lint
 
@@ -75,7 +94,9 @@ See `internal/anekbot/anek.go`'s classic inline-result loop for the pattern.
   code can't: a protocol/encoding quirk (e.g. rzhunemogu.ru serving windows-1251), an
   invariant the type system doesn't enforce ("ctx must carry a deadline"), a magic
   number's meaning, or behavior that spans multiple functions and isn't visible from a
-  single glance. When you do keep one, make it one line stating the fact directly.
+  single glance. When you do keep one, make it one line stating the fact directly. This
+  includes sentinel errors (`var ErrFoo = errors.New("...")`): if the message already
+  states the fact, don't add a doc comment above it that just repeats the message.
 - Errors are wrapped with `%w` (`fmt.Errorf("...: %w", err)`) throughout. Inside
   `internal/anekbot`, failures that shouldn't abort a handler are logged via
   `internal/logging` (`logging.Warnf`/`Debugf`) rather than returned; `internal/stats`

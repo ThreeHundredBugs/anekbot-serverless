@@ -26,7 +26,7 @@ func newTestHuggingFaceProvider(t *testing.T, statusCode int, responseBody strin
 	}))
 	t.Cleanup(server.Close)
 
-	p = NewHuggingFaceProvider("test-token", "")
+	p = NewHuggingFaceProvider("test", "test-token", "", 1)
 	p.client = server.Client()
 	p.baseURL = server.URL
 

@@ -24,6 +24,10 @@ func (f *fakeLLMProvider) Name() string {
 	return f.name
 }
 
+func (f *fakeLLMProvider) Weight() int {
+	return 1
+}
+
 func (f *fakeLLMProvider) Ask(_ context.Context, _, _ string) (string, error) {
 	f.calls++
 	if f.err != nil {
@@ -49,7 +53,7 @@ func TestLLMHandler_Trigger(t *testing.T) {
 		t.Fatalf("expected 1 message sent, got %d", len(sender.sentMessages))
 	}
 	sent := sender.sentMessages[0]
-	if want := "42\n\nby Fake"; sent.Text != want {
+	if want := "42"; sent.Text != want {
 		t.Errorf("text = %q, want %q", sent.Text, want)
 	}
 	if sent.ChatID != int64(7) {
@@ -165,7 +169,7 @@ func TestLLMHandler_FallsBackToSecondaryProviderOnPrimaryError(t *testing.T) {
 	if len(sender.sentMessages) != 1 {
 		t.Fatalf("expected 1 message sent from the fallback provider, got %d", len(sender.sentMessages))
 	}
-	if want := "42\n\nby Fallback"; sender.sentMessages[0].Text != want {
+	if want := "42"; sender.sentMessages[0].Text != want {
 		t.Errorf("text = %q, want %q", sender.sentMessages[0].Text, want)
 	}
 }
@@ -256,7 +260,7 @@ func TestLLMHandler_FallsBackToPlainTextWhenHTMLRejected(t *testing.T) {
 	if sent.ParseMode != "" {
 		t.Errorf("fallback parse mode = %q, want empty (plain text)", sent.ParseMode)
 	}
-	if want := "<b>42</b>\n\nby Fake"; sent.Text != want {
+	if want := "<b>42</b>"; sent.Text != want {
 		t.Errorf("fallback text = %q, want %q", sent.Text, want)
 	}
 }

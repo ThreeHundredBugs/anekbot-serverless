@@ -29,7 +29,7 @@ func newTestGeminiProvider(t *testing.T, statusCode int, responseBody string) (p
 	}))
 	t.Cleanup(server.Close)
 
-	p = NewGeminiProvider("test-key", "")
+	p = NewGeminiProvider("test", "test-key", "", nil, 1)
 	p.client = server.Client()
 	p.baseURL = server.URL
 
@@ -70,6 +70,22 @@ func TestGeminiProvider_Ask_Success(t *testing.T) {
 	if want := "/models/" + defaultGeminiModel + ":generateContent"; lastPath() != want {
 		t.Errorf("request path = %q, want %q", lastPath(), want)
 	}
+	if got := req.GenerationConfig.ThinkingConfig.ThinkingBudget; got != defaultGeminiThinkingBudget {
+		t.Errorf("thinking budget = %d, want default %d", got, defaultGeminiThinkingBudget)
+	}
+}
+
+func TestGeminiProvider_Ask_CustomThinkingBudget(t *testing.T) {
+	p, lastRequest, _ := newTestGeminiProvider(t, http.StatusOK, `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`)
+	budget := 0
+	p.thinkingBudget = budget
+
+	if _, err := p.Ask(context.Background(), testSystemPrompt, "hi"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got := lastRequest().GenerationConfig.ThinkingConfig.ThinkingBudget; got != budget {
+		t.Errorf("thinking budget = %d, want %d", got, budget)
+	}
 }
 
 func TestGeminiProvider_Ask_CustomModel(t *testing.T) {
@@ -80,7 +96,7 @@ func TestGeminiProvider_Ask_CustomModel(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	p := NewGeminiProvider("test-key", "custom-model")
+	p := NewGeminiProvider("test", "test-key", "custom-model", nil, 1)
 	p.client = server.Client()
 	p.baseURL = server.URL
 

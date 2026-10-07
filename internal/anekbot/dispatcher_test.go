@@ -12,7 +12,7 @@ import (
 
 func newTestDispatcher(t *testing.T) *Dispatcher {
 	t.Helper()
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	swearing, err := NewSwearingHandler("")
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
@@ -40,7 +40,7 @@ func TestDispatch_Message_DoesNotAnswerInlineQuery(t *testing.T) {
 }
 
 func TestDispatch_Message_RunsLLMHandlerWhenConfigured(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	swearing, err := NewSwearingHandler("")
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
@@ -63,7 +63,7 @@ func TestDispatch_Message_RunsLLMHandlerWhenConfigured(t *testing.T) {
 }
 
 func TestDispatch_Message_RunsLLMAndSwearingHandlers(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	swearing, err := NewSwearingHandler("")
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
@@ -108,7 +108,7 @@ func TestDispatch_Message_SkipsDisabledAnekAndSwearing(t *testing.T) {
 }
 
 func TestDispatch_Message_RunsHelpHandlerWhenConfigured(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	swearing, err := NewSwearingHandler("")
 	if err != nil {
 		t.Fatalf("NewSwearingHandler: %v", err)
@@ -143,7 +143,7 @@ func TestDispatch_InlineQuery_SkipsDisabledAnek(t *testing.T) {
 }
 
 func TestDispatch_InlineQuery_WithQuery_ShowsPlaceholderWithoutCallingLLM(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	primary := &fakeLLMProvider{answer: "42"}
 	anek.SetLLM(NewLLM("", llm.Limits{}, primary))
 	d := NewDispatcher(anek, nil, nil, nil)
@@ -167,7 +167,7 @@ func TestDispatch_InlineQuery_WithQuery_ShowsPlaceholderWithoutCallingLLM(t *tes
 }
 
 func TestDispatch_ChosenInlineResult_RunsAnekHandlerWithLLM(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	anek.SetLLM(NewLLM("", llm.Limits{}, &fakeLLMProvider{answer: "42"}))
 	d := NewDispatcher(anek, nil, nil, nil)
 
@@ -201,7 +201,7 @@ func TestDispatch_ChosenInlineResult_SkipsDisabledAnek(t *testing.T) {
 }
 
 func TestDispatch_CallbackQuery_RunsAnekHandler(t *testing.T) {
-	anek, _ := newTestAnekHandler(t, `{"content":"joke"}`, 0.1)
+	anek, _ := newTestAnekHandler(t, `{"content":"анек"}`, 0.1)
 	d := NewDispatcher(anek, nil, nil, nil)
 
 	sender := &fakeSender{}

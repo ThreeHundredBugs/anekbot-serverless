@@ -19,7 +19,7 @@ type HelpHandler struct {
 func NewHelpHandler(botUsername string, anekEnabled, swearingEnabled, llmEnabled bool) *HelpHandler {
 	return &HelpHandler{
 		text:           buildHelpText(botUsername, anekEnabled, swearingEnabled, llmEnabled),
-		commandPattern: regexp.MustCompile(`(?i)^/help(?:@` + regexp.QuoteMeta(botUsername) + `)?(?:\s|$)`),
+		commandPattern: regexp.MustCompile(`(?i)^/(?:help|start)(?:@` + regexp.QuoteMeta(botUsername) + `)?(?:\s|$)`),
 	}
 }
 
@@ -57,7 +57,7 @@ func (h *HelpHandler) Handle(ctx context.Context, sender Sender, update *models.
 	if !h.commandPattern.MatchString(msg.Text) {
 		return
 	}
-	logging.Debugf("help handler: replying to /help in chat_id=%d", msg.Chat.ID)
+	logging.Debugf("help handler: replying to %s in chat_id=%d", msg.Text, msg.Chat.ID)
 
 	if _, err := sender.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          msg.Chat.ID,

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -32,6 +33,10 @@ const (
 	anekType18Plus = 11
 
 	anekMaxResponseBytes = 16 << 10
+
+	// rzhunemogu.ru occasionally returns garbage (e.g. SQL-injection payloads) instead of a
+	// joke; real aneks are Russian text, so require most letters to be Cyrillic.
+	minCyrillicLetterRatio = 0.4
 
 	inlineSuggestionCount = 3
 	inlineTitleMaxRunes   = 60
@@ -322,7 +327,7 @@ func (h *AnekHandler) HandleChosenInlineResult(ctx context.Context, sender Sende
 	}
 
 	logging.Debugf("anek handler: generating AI joke for topic %q", topic)
-	joke, _, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
+	joke, err := h.llm.AskFor(ctx, llm.UserID(chosen.From.ID), fmt.Sprintf(h.aiJokePromptTemplate, topic))
 	if err != nil {
 		logging.Warnf("anek handler: generate AI joke: %v", err)
 		h.editInlineMessage(ctx, sender, chosen.InlineMessageID, llmErrorMessage(err), false, false)
@@ -447,5 +452,22 @@ func (h *AnekHandler) fetchJoke(ctx context.Context) (string, error) {
 	if strings.TrimSpace(joke) == "" {
 		return "", errors.New("empty joke")
 	}
+	if !isMostlyCyrillic(joke) {
+		return "", fmt.Errorf("joke doesn't look like Russian text, discarding: %q", joke)
+	}
 	return truncateToRunes(joke, telegramMessageMaxRunes), nil
+}
+
+func isMostlyCyrillic(s string) bool {
+	var letters, cyrillic int
+	for _, r := range s {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		letters++
+		if unicode.Is(unicode.Cyrillic, r) {
+			cyrillic++
+		}
+	}
+	return letters > 0 && float64(cyrillic)/float64(letters) >= minCyrillicLetterRatio
 }
