@@ -81,7 +81,7 @@ type fileConfig struct {
 		// SystemPrompt is sent to the LLM for both question-answering and AI joke generation.
 		SystemPrompt  string `json:"system_prompt"`
 		LoadBalancing struct {
-			// Algorithm is "order" (default), "round_robin" or "random"; see llm.ParseAlgorithm.
+			// Algorithm is "round_robin" (default), "order" or "random"; see llm.ParseAlgorithm.
 			Algorithm string `json:"algorithm"`
 		} `json:"load_balancing"`
 	} `json:"llm"`
@@ -284,18 +284,13 @@ func loadConfig(args []string) (*config, error) {
 		if algo != llm.Order && pc.Weight != nil && *pc.Weight < 1 {
 			return nil, fmt.Errorf("llm.providers[%s]: weight must be >= 1 for algorithm %q, got %d", pc.Name, algo, *pc.Weight)
 		}
-		weight := 1
-		if pc.Weight != nil {
-			weight = *pc.Weight
-		}
-		totalWeight += weight
-
 		provider, err := buildProvider(pc)
 		if err != nil {
 			return nil, err
 		}
 		if provider != nil {
 			cfg.llmProviders = append(cfg.llmProviders, provider)
+			totalWeight += provider.Weight()
 		}
 	}
 	if algo == llm.RoundRobin && totalWeight > llm.MaxRoundRobinWeight {

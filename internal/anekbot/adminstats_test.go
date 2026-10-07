@@ -2,7 +2,6 @@ package anekbot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -139,7 +138,7 @@ func TestStatsHandler_HandleCallback_NoopWhenStatsUnchanged(t *testing.T) {
 		failEditMessageTextIf: func(p *bot.EditMessageTextParams) bool {
 			return p.ParseMode == models.ParseModeHTML
 		},
-		failEditMessageTextErr: errors.New("bad request, message is not modified"),
+		failEditMessageTextErr: fmt.Errorf("%w, message is not modified", bot.ErrorBadRequest),
 	}
 
 	update := &models.Update{CallbackQuery: &models.CallbackQuery{

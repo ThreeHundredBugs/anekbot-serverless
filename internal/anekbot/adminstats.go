@@ -2,7 +2,9 @@ package anekbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -128,7 +130,7 @@ func (h *StatsHandler) HandleCallback(ctx context.Context, sender Sender, update
 }
 
 func isMessageNotModified(err error) bool {
-	return strings.Contains(err.Error(), "message is not modified")
+	return errors.Is(err, bot.ErrorBadRequest) && strings.Contains(err.Error(), "message is not modified")
 }
 
 func statsKeyboard() *models.InlineKeyboardMarkup {
@@ -225,7 +227,7 @@ func formatTopUsers(top []stats.UserTotal) string {
 	for i, u := range top {
 		name := "id:" + fmt.Sprint(u.UserID)
 		if u.Username != "" {
-			name = "@" + escapeHTML(u.Username)
+			name = "@" + html.EscapeString(u.Username)
 		}
 		fmt.Fprintf(&b, "\n%d. %s — %d", i+1, name, u.Count)
 	}
@@ -262,7 +264,7 @@ func renderTable(header []string, rows [][]string) string {
 				b.WriteString("  ")
 			}
 			pad := widths[i] - utf8.RuneCountInString(cell)
-			b.WriteString(escapeHTML(cell))
+			b.WriteString(html.EscapeString(cell))
 			b.WriteString(strings.Repeat(" ", pad))
 		}
 		b.WriteString("\n")
@@ -275,12 +277,4 @@ func renderTable(header []string, rows [][]string) string {
 	}
 	b.WriteString("</pre>")
 	return b.String()
-}
-
-var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
-
-// escapeHTML escapes text inserted into a ParseModeHTML message; Telegram still parses
-// entities inside <pre>/<code>, so they aren't exempt either.
-func escapeHTML(text string) string {
-	return htmlEscaper.Replace(text)
 }

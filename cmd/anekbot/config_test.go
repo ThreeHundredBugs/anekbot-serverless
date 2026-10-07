@@ -322,6 +322,25 @@ func TestLoadConfig_TotalWeightCapNotEnforcedUnderRandom(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_TotalWeightCapIgnoresSkippedProvider(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, `{"bot": {"token": "t"}, "llm": {
+		"providers": [
+			{"name": "g", "weight": 600, "gemini": {"api_key": "k"}},
+			{"name": "h", "weight": 600, "huggingface": {"api_key_env": "UNSET_KEY"}}
+		],
+		"load_balancing": {"algorithm": "round_robin"}
+	}}`)
+
+	cfg, err := loadConfig([]string{"-config", path})
+	if err != nil {
+		t.Fatalf("loadConfig: %v (provider h is skipped for its unset key, so its weight shouldn't count toward the cap)", err)
+	}
+	if len(cfg.llmProviders) != 1 {
+		t.Fatalf("providers = %d, want 1", len(cfg.llmProviders))
+	}
+}
+
 func TestLoadConfig_LLMProviderAPIKeyWinsOverEnv(t *testing.T) {
 	clearEnv(t)
 	// api_key_env points at an unset var; if it were used instead of api_key, the provider
